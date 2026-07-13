@@ -208,3 +208,23 @@ Make certain usage for messaging tokens, adapter tokens, adapter training, and d
 ## Free Trial
 make certain pro with free trial moves to free tier if the trial ends without payment information
 make certain pro with free trial continues to pro tier if the trial ends with payment information
+
+---
+# Notes Directory structure and Deployment
+The customer portal uses a client-server architecture and will be hosted on Vercel:
+client-server base reference: https://docs.stripe.com/checkout/quickstart
+
+current directory structure:
+user@linux-pc:~/gh/anubis-project/anubis-customer-portal$ nn-tree
+.
+├── _FEATURE.md
+├── .gitignore
+├── LICENSE
+├── README.md
+└── src
+    ├── client
+    └── server
+
+namespace for the customer portal will be https://checkout.neuralnexus.site
+
+
