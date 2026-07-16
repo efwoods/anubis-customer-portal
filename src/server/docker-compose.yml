@@ -1,0 +1,29 @@
+# Neural Nexus customer portal server stack.
+#
+#   Test environment:  docker compose up --build
+#   Live environment:  docker compose --env-file .env.live up --build
+#
+# The portal-server container is the backend-for-frontend the Vercel client
+# calls; the cloudflared container exposes it to the public internet on the
+# hostname configured for the tunnel (e.g. checkout-api.neuralnexus.site).
+
+services:
+  portal-server:
+    build: .
+    env_file:
+      - ${COMPOSE_ENV_FILE:-.env}
+    ports:
+      - "${PORT:-8080}:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - portal-server

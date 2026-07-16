@@ -219,3 +219,7 @@ __marimo__/
 # VsCode User Settings
 
 .vscode
+
+# Node (portal client)
+node_modules/
+.env.live
