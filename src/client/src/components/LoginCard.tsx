@@ -4,14 +4,18 @@ import { apiRequest, setSessionToken } from "../api";
 interface LoginCardProps {
   onSignedIn: () => void;
   onDismiss: () => void;
+  /** When set, copy explains this sign-in continues the free Pro trial checkout. */
+  pendingTier?: string | null;
 }
 
-export function LoginCard({ onSignedIn, onDismiss }: LoginCardProps) {
+export function LoginCard({ onSignedIn, onDismiss, pendingTier }: LoginCardProps) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [codeRequested, setCodeRequested] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const isProTrialSignup = pendingTier === "pro";
 
   const requestCode = async (event: FormEvent) => {
     event.preventDefault();
@@ -55,7 +59,7 @@ export function LoginCard({ onSignedIn, onDismiss }: LoginCardProps) {
   return (
     <section className="card login-card">
       <div className="card-header-row">
-        <h2>Sign in</h2>
+        <h2>{isProTrialSignup ? "Sign up for free Pro trial" : "Sign in"}</h2>
         <button className="link-button" onClick={onDismiss}>
           Close
         </button>
@@ -63,8 +67,17 @@ export function LoginCard({ onSignedIn, onDismiss }: LoginCardProps) {
       {!codeRequested ? (
         <form onSubmit={requestCode} className="stacked-form">
           <p>
-            Enter the email on your Neural Nexus account and we will send a one-time
-            sign-in code.
+            {isProTrialSignup ? (
+              <>
+                Enter the email for your Neural Nexus account. After the one-time
+                code, we open Stripe Checkout for the free Pro trial.
+              </>
+            ) : (
+              <>
+                Enter the email on your Neural Nexus account and we will send a
+                one-time sign-in code.
+              </>
+            )}
           </p>
           <label>
             Email
@@ -100,7 +113,11 @@ export function LoginCard({ onSignedIn, onDismiss }: LoginCardProps) {
           </label>
           <div className="button-row">
             <button className="primary-button" disabled={busy || code.length !== 6}>
-              {busy ? "Verifying…" : "Verify and sign in"}
+              {busy
+                ? "Verifying…"
+                : isProTrialSignup
+                  ? "Verify and start trial"
+                  : "Verify and sign in"}
             </button>
             <button
               type="button"

@@ -3,10 +3,14 @@ import { apiRequest } from "../api";
 import type { SubscriptionActionResult, SubscriptionStatus } from "../types";
 import { TierSwitcher } from "./TierSwitcher";
 
+const PENDING_TIER_STORAGE_KEY = "nn-portal-pending-tier";
+
 interface SubscriptionSectionProps {
   isVerified: boolean;
   refreshCounter: number;
   onChanged: () => void;
+  /** Anonymous: open sign-in, then complete checkout for this tier after OTP. */
+  onRequestSignupForTier?: (tier: string) => void;
 }
 
 function formatDate(isoDate: string | null): string {
@@ -20,10 +24,52 @@ function formatDate(isoDate: string | null): string {
   });
 }
 
+export function readPendingTierChange(): string | null {
+  try {
+    return sessionStorage.getItem(PENDING_TIER_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingTierChange(): void {
+  try {
+    sessionStorage.removeItem(PENDING_TIER_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function storePendingTierChange(tier: string): void {
+  try {
+    sessionStorage.setItem(PENDING_TIER_STORAGE_KEY, tier);
+  } catch {
+    // ignore
+  }
+}
+
+export async function startPendingTierCheckout(): Promise<boolean> {
+  const tier = readPendingTierChange();
+  if (!tier) {
+    return false;
+  }
+  clearPendingTierChange();
+  const result = await apiRequest<SubscriptionActionResult>("/subscription/change", {
+    method: "POST",
+    body: { tier },
+  });
+  if (result.action === "start_checkout" && result.url) {
+    window.location.href = result.url;
+    return true;
+  }
+  return false;
+}
+
 export function SubscriptionSection({
   isVerified,
   refreshCounter,
   onChanged,
+  onRequestSignupForTier,
 }: SubscriptionSectionProps) {
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -95,7 +141,9 @@ export function SubscriptionSection({
           </span>
         ) : subscription.status ? (
           <span className="badge badge-success">{subscription.status}</span>
-        ) : null}
+        ) : (
+          <span className="badge badge-info">anonymous free tier</span>
+        )}
       </div>
 
       <p className="plan-name">
@@ -146,11 +194,25 @@ export function SubscriptionSection({
         <TierSwitcher
           subscription={subscription}
           busy={busyAction !== null}
+          mode="switch"
           onSelectTier={(tier) =>
             runAction(`change:${tier}`, "/subscription/change", { tier })
           }
         />
-      ) : null}
+      ) : (
+        <TierSwitcher
+          subscription={subscription}
+          busy={busyAction !== null}
+          mode="signup"
+          onSelectTier={(tier) => {
+            if (onRequestSignupForTier) {
+              onRequestSignupForTier(tier);
+              return;
+            }
+            storePendingTierChange(tier);
+          }}
+        />
+      )}
 
       {actionMessage ? <p className="success-text">{actionMessage}</p> : null}
       {errorMessage ? <p className="error-text">{errorMessage}</p> : null}

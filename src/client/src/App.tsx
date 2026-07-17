@@ -7,15 +7,24 @@ import { EnvironmentBanner } from "./components/EnvironmentBanner";
 import { InvoiceHistorySection } from "./components/InvoiceHistorySection";
 import { LoginCard } from "./components/LoginCard";
 import { PaymentMethodsSection } from "./components/PaymentMethodsSection";
-import { SubscriptionSection } from "./components/SubscriptionSection";
+import {
+  clearPendingTierChange,
+  startPendingTierCheckout,
+  storePendingTierChange,
+  SubscriptionSection,
+} from "./components/SubscriptionSection";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageSection } from "./components/UsageSection";
+import { applyTheme, getStoredTheme, toggleTheme, type PortalTheme } from "./theme";
 
 export default function App() {
   const [configuration, setConfiguration] = useState<PortalConfiguration | null>(null);
   const [identity, setIdentity] = useState<CurrentIdentity | null>(null);
   const [showLogin, setShowLogin] = useState(false);
+  const [pendingTier, setPendingTier] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
+  const [theme, setTheme] = useState<PortalTheme>(() => getStoredTheme());
 
   const refreshDashboard = useCallback(() => {
     setRefreshCounter((previous) => previous + 1);
@@ -25,12 +34,14 @@ export default function App() {
     try {
       const currentIdentity = await apiRequest<CurrentIdentity>("/me");
       setIdentity(currentIdentity);
-      setShowLogin(false);
+      // Anonymous visitors are resolved automatically via hashed IP — do not
+      // force the login card open.
+      if (currentIdentity.kind === "verified") {
+        setShowLogin(false);
+      }
     } catch (identityError) {
       setIdentity(null);
-      if (getSessionToken() === null) {
-        setShowLogin(true);
-      } else {
+      if (getSessionToken() !== null) {
         setLoadError(
           identityError instanceof Error
             ? identityError.message
@@ -39,6 +50,10 @@ export default function App() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     (async () => {
@@ -66,7 +81,29 @@ export default function App() {
 
   const handleSignOut = () => {
     clearSessionToken();
+    clearPendingTierChange();
+    setPendingTier(null);
     setIdentity(null);
+    refreshDashboard();
+  };
+
+  const handleRequestSignupForTier = (tier: string) => {
+    storePendingTierChange(tier);
+    setPendingTier(tier);
+    setShowLogin(true);
+  };
+
+  const handleSignedIn = async () => {
+    setShowLogin(false);
+    try {
+      const startedCheckout = await startPendingTierCheckout();
+      if (startedCheckout) {
+        return;
+      }
+    } catch {
+      // Fall through to dashboard refresh; subscription section can retry.
+    }
+    setPendingTier(null);
     refreshDashboard();
   };
 
@@ -97,6 +134,10 @@ export default function App() {
           <p className="subtitle">Customer portal</p>
         </div>
         <div className="header-identity">
+          <ThemeToggle
+            theme={theme}
+            onToggle={() => setTheme((current) => toggleTheme(current))}
+          />
           {isVerified ? (
             <>
               <span>{identity?.name || identity?.email}</span>
@@ -114,19 +155,25 @@ export default function App() {
 
       {showLogin && !isVerified ? (
         <LoginCard
+          pendingTier={pendingTier}
           onSignedIn={() => {
-            setShowLogin(false);
-            refreshDashboard();
+            void handleSignedIn();
           }}
-          onDismiss={() => setShowLogin(false)}
+          onDismiss={() => {
+            setShowLogin(false);
+            setPendingTier(null);
+            clearPendingTierChange();
+          }}
         />
       ) : null}
 
       {!isVerified && identity ? (
         <AnonymousNotice
           identity={identity}
-          nnApiBaseUrl={configuration.nn_api_base_url}
-          onSignIn={() => setShowLogin(true)}
+          onSignIn={() => {
+            setPendingTier(null);
+            setShowLogin(true);
+          }}
         />
       ) : null}
 
@@ -134,6 +181,7 @@ export default function App() {
         isVerified={isVerified}
         refreshCounter={refreshCounter}
         onChanged={refreshDashboard}
+        onRequestSignupForTier={handleRequestSignupForTier}
       />
       <UsageSection
         isVerified={isVerified}
