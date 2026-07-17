@@ -91,6 +91,8 @@ def client(monkeypatch):
 
     monkeypatch.setattr(routers.subscription, "get_tier_catalog", fake_get_tier_catalog)
     monkeypatch.setattr(routers.usage, "get_tier_catalog", fake_get_tier_catalog)
+    # The lifespan warms the catalog at startup; keep tests off the network.
+    monkeypatch.setattr(main, "get_tier_catalog", fake_get_tier_catalog)
 
     async def fake_read_pay_per_use_enabled(email: str) -> bool | None:
         return None
@@ -267,6 +269,34 @@ def test_usage_report_shape(client, monkeypatch):
     documents = body["meters"]["document_upload_tokens"]
     assert documents["used_to_date"] == 42
     assert documents["remaining"] == 10_000_000 - 42
+
+
+def test_unprovisioned_catalog_returns_503_on_tier_change(client, monkeypatch):
+    """An unprovisioned Stripe environment (empty catalog) must yield an
+    actionable 503 on tier mutations, not an unhandled 500."""
+    token = _sign_in(client, monkeypatch)
+
+    async def fake_empty_tier_catalog(force_refresh: bool = False) -> dict:
+        return {}
+
+    monkeypatch.setattr(
+        routers.subscription, "get_tier_catalog", fake_empty_tier_catalog
+    )
+
+    async def fake_get_current_subscription(customer_id: str) -> dict | None:
+        return SAMPLE_PRO_TRIAL_SUBSCRIPTION
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "get_current_subscription", fake_get_current_subscription
+    )
+
+    change_response = client.post(
+        "/subscription/change",
+        json={"tier": "premium"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert change_response.status_code == 503
+    assert "provision" in change_response.json()["detail"].lower()
 
 
 def test_verified_only_endpoints_reject_anonymous(client, monkeypatch):

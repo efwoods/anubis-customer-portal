@@ -91,3 +91,14 @@ STRIPE_SECRET_KEY=sk_test_... .venv/bin/python scripts/stripe_test_mode_smoke.py
   pay-per-use toggle can take up to five minutes to affect request gating there.
 - The Neural Nexus API repository needs no changes: its Stripe webhook keeps
   Auth0 subscription state in sync with everything this portal does in Stripe.
+- The Stripe meter-usage analytics preview API is not enabled on the current
+  Stripe account, so the portal's GA event-summaries fallback is the effective
+  usage source. The server handles this automatically (the preview endpoint's
+  404 is remembered for an hour); no configuration is needed.
+- **Pre-launch checklist for live mode**: the live Stripe environment was
+  verified UNPROVISIONED as of 2026-07-16 (its products carry none of the
+  `neural_nexus_*` metadata). Run the f-metering
+  `scripts/provision_stripe_billing.py` script against the live account before
+  `docker compose --env-file .env.live up`; until then, subscription checkout
+  and tier changes return HTTP 503 with an explanatory message (the server
+  also logs a warning at startup when the catalog is empty).

@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
-    port: 5173,
+    // 5173 is reserved for another local app; portal uses 5171.
+    port: 5171,
   },
 });

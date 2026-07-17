@@ -14,7 +14,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class PortalSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # env_ignore_empty: .env files copied from .env.example keep every key with
+    # unset values left empty ("SMTP_PORT="); treat those as "use the default"
+    # instead of failing integer parsing at startup.
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     # Environment identity -------------------------------------------------
     portal_env: str = "test"  # "test" | "live" — surfaced in the client banner

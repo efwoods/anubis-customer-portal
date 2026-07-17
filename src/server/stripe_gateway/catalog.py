@@ -23,6 +23,7 @@ import re
 import time
 
 import stripe
+from fastapi import HTTPException
 
 from settings import get_portal_settings
 
@@ -209,9 +210,11 @@ def catalog_prices_for_tier(catalog: dict, tier: str) -> list[str]:
     """Ordered price ids for one tier: the flat base first, then metered prices."""
     tier_entry = catalog.get(tier)
     if not tier_entry or not tier_entry.get("base_price_id"):
-        raise KeyError(
-            f"The Stripe catalog has no provisioned prices for tier '{tier}'. "
-            "Run the f-metering provision_stripe_billing.py script first."
+        raise HTTPException(
+            status_code=503,
+            detail=f"The Stripe catalog has no provisioned prices for tier '{tier}'. "
+            "This Stripe environment has not been provisioned — run the f-metering "
+            "provision_stripe_billing.py script against this Stripe account first.",
         )
     ordered_price_ids = [tier_entry["base_price_id"]]
     for meter_entry in tier_entry["meters"].values():

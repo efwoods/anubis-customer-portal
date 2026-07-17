@@ -8,9 +8,10 @@ services:
   portal-client:
     build: .
     env_file:
-      - .env
+      - .env.dev
+    # 5173 is reserved for another app; Vite and host publish both use 5171.
     ports:
-      - "5173:5173"
+      - "5171:5171"
     volumes:
       - ./src:/app/src
       - ./index.html:/app/index.html

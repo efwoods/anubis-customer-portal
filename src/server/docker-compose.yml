@@ -11,9 +11,9 @@ services:
   portal-server:
     build: .
     env_file:
-      - ${COMPOSE_ENV_FILE:-.env}
+      - .env.dev
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-8200}:8080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
