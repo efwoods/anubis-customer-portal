@@ -2,8 +2,9 @@
 
 Two identity kinds exist:
 
-* ``verified`` — a bearer session token minted after email one-time-passcode
-  verification; carries the Stripe customer id and email.
+* ``verified`` — a bearer session token minted after email + password
+  authentication against the Neural Nexus API; carries the Stripe customer id,
+  email, and the Neural Nexus refresh token used for sign-out.
 * ``anonymous`` — no (valid) bearer token; the client ip is hashed with the
   exact same sha256 scheme the Neural Nexus API uses
   (``hashlib.sha256(x_forwarded_for.encode()).hexdigest()``) and matched
@@ -37,6 +38,9 @@ class CustomerIdentity:
     customer_id: str | None
     email: str | None = None
     hashed_ip: str | None = None
+    # The Neural Nexus refresh token from login, present only for verified
+    # identities; used by /auth/logout to revoke the session.
+    nn_refresh_token: str | None = None
 
     @property
     def is_verified(self) -> bool:
@@ -66,6 +70,7 @@ async def resolve_customer_identity(
                 kind="verified",
                 customer_id=session_claims["sub"],
                 email=session_claims.get("email"),
+                nn_refresh_token=session_claims.get("nn_refresh_token"),
             )
         raise HTTPException(status_code=401, detail="Session is invalid or expired. Sign in again.")
 

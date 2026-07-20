@@ -13,19 +13,27 @@ import jwt
 from settings import PortalSettings
 
 
-def mint_session_token(settings: PortalSettings, customer_id: str, email: str) -> str:
+def mint_session_token(
+    settings: PortalSettings,
+    customer_id: str,
+    email: str,
+    nn_refresh_token: str | None = None,
+) -> str:
     issued_at = datetime.datetime.now(datetime.timezone.utc)
-    return jwt.encode(
-        {
-            "sub": customer_id,
-            "email": email,
-            "kind": "verified",
-            "iat": issued_at,
-            "exp": issued_at + datetime.timedelta(hours=settings.session_ttl_hours),
-        },
-        settings.session_signing_secret,
-        algorithm="HS256",
-    )
+    claims: dict = {
+        "sub": customer_id,
+        "email": email,
+        "kind": "verified",
+        "iat": issued_at,
+        "exp": issued_at + datetime.timedelta(hours=settings.session_ttl_hours),
+    }
+    # The Neural Nexus refresh token is carried in the (client-held) session so
+    # /auth/logout can revoke it later; the portal keeps no server-side session
+    # store. This mirrors how the Neural Nexus dashboard stores the token set
+    # client-side.
+    if nn_refresh_token:
+        claims["nn_refresh_token"] = nn_refresh_token
+    return jwt.encode(claims, settings.session_signing_secret, algorithm="HS256")
 
 
 def decode_session_token(settings: PortalSettings, token: str) -> dict | None:

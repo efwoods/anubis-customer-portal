@@ -79,7 +79,14 @@ export default function App() {
     }
   }, []);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    // Revoke the Neural Nexus session (best-effort); always clear locally so
+    // sign-out never blocks on the server being reachable.
+    try {
+      await apiRequest<void>("/auth/logout", { method: "POST" });
+    } catch {
+      // Ignore — the local token is cleared below regardless.
+    }
     clearSessionToken();
     clearPendingTierChange();
     setPendingTier(null);
@@ -141,7 +148,12 @@ export default function App() {
           {isVerified ? (
             <>
               <span>{identity?.name || identity?.email}</span>
-              <button className="link-button" onClick={handleSignOut}>
+              <button
+                className="link-button"
+                onClick={() => {
+                  void handleSignOut();
+                }}
+              >
                 Sign out
               </button>
             </>

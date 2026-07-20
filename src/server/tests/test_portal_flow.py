@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import auth0_gateway
 import main
+import neural_nexus_gateway
 import routers.auth
 import routers.subscription
 import routers.usage
@@ -106,7 +107,7 @@ def client(monkeypatch):
 
 
 def _sign_in(client: TestClient, monkeypatch) -> str:
-    """Run the full one-time-passcode flow and return the bearer token."""
+    """Authenticate with email + password (Neural Nexus mocked) and return the token."""
 
     async def fake_find_customer_by_email(email: str) -> dict | None:
         return {"id": "cus_test", "email": email}
@@ -115,32 +116,22 @@ def _sign_in(client: TestClient, monkeypatch) -> str:
         stripe_customers, "find_customer_by_email", fake_find_customer_by_email
     )
 
-    captured: dict[str, str] = {}
+    async def fake_login(email: str, password: str) -> dict:
+        return {"refresh_token": "rt_test", "access_token": "at_test"}
 
-    async def capture_passcode_email(recipient_email: str, code: str) -> None:
-        captured["code"] = code
+    monkeypatch.setattr(neural_nexus_gateway, "login", fake_login)
 
-    monkeypatch.setattr(
-        routers.auth, "send_one_time_passcode_email", capture_passcode_email
+    login_response = client.post(
+        "/auth/login",
+        json={"email": "customer@example.com", "password": "correct horse"},
     )
-
-    request_response = client.post(
-        "/auth/request_otp", json={"email": "customer@example.com"}
-    )
-    assert request_response.status_code == 204
-    assert len(captured["code"]) == 6
-
-    verify_response = client.post(
-        "/auth/verify_otp",
-        json={"email": "customer@example.com", "code": captured["code"]},
-    )
-    assert verify_response.status_code == 200
-    body = verify_response.json()
+    assert login_response.status_code == 200
+    body = login_response.json()
     assert body["customer_id"] == "cus_test"
     return body["token"]
 
 
-def test_one_time_passcode_flow_and_me(client, monkeypatch):
+def test_password_login_and_me(client, monkeypatch):
     token = _sign_in(client, monkeypatch)
 
     async def fake_get_customer(customer_id: str) -> dict:
@@ -158,35 +149,88 @@ def test_one_time_passcode_flow_and_me(client, monkeypatch):
     }
 
 
-def test_wrong_passcode_is_rejected(client, monkeypatch):
+def test_wrong_password_rejected(client, monkeypatch):
+    async def fake_login(email: str, password: str) -> dict:
+        raise neural_nexus_gateway.NeuralNexusAuthError(
+            "Invalid email or password.", status_code=401
+        )
+
+    monkeypatch.setattr(neural_nexus_gateway, "login", fake_login)
+
+    response = client.post(
+        "/auth/login",
+        json={"email": "customer@example.com", "password": "wrong"},
+    )
+    assert response.status_code == 401
+
+
+def test_login_without_billing_account_rejected(client, monkeypatch):
+    async def fake_login(email: str, password: str) -> dict:
+        return {"refresh_token": "rt_test"}
+
+    monkeypatch.setattr(neural_nexus_gateway, "login", fake_login)
+
     async def fake_find_customer_by_email(email: str) -> dict | None:
-        return {"id": "cus_test", "email": email}
+        return None
 
     monkeypatch.setattr(
         stripe_customers, "find_customer_by_email", fake_find_customer_by_email
     )
 
-    async def swallow_email(recipient_email: str, code: str) -> None:
-        return None
-
-    monkeypatch.setattr(routers.auth, "send_one_time_passcode_email", swallow_email)
-
-    client.post("/auth/request_otp", json={"email": "customer@example.com"})
-    verify_response = client.post(
-        "/auth/verify_otp", json={"email": "customer@example.com", "code": "000000"}
+    response = client.post(
+        "/auth/login",
+        json={"email": "nobody@example.com", "password": "correct horse"},
     )
-    assert verify_response.status_code == 401
+    assert response.status_code == 403
 
 
-def test_unknown_email_still_returns_204(client, monkeypatch):
-    async def fake_find_customer_by_email(email: str) -> dict | None:
+def test_logout_revokes_neural_nexus_session(client, monkeypatch):
+    token = _sign_in(client, monkeypatch)
+
+    captured: dict[str, str] = {}
+
+    async def fake_logout(refresh_token: str) -> None:
+        captured["refresh_token"] = refresh_token
+
+    monkeypatch.setattr(neural_nexus_gateway, "logout", fake_logout)
+
+    logout_response = client.post(
+        "/auth/logout", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert logout_response.status_code == 204
+    assert captured["refresh_token"] == "rt_test"
+
+
+def test_logout_requires_verified_identity(client, monkeypatch):
+    async def fake_find_anonymous(hashed_ip: str) -> str | None:
         return None
 
     monkeypatch.setattr(
-        stripe_customers, "find_customer_by_email", fake_find_customer_by_email
+        stripe_customers, "find_customer_id_by_anonymous_hashed_ip", fake_find_anonymous
     )
-    response = client.post("/auth/request_otp", json={"email": "nobody@example.com"})
-    assert response.status_code == 204
+
+    response = client.post("/auth/logout")
+    assert response.status_code == 401
+
+
+def test_signup_proxies_to_neural_nexus(client, monkeypatch):
+    captured: dict[str, str | None] = {}
+
+    async def fake_signup(email: str, password: str, name: str | None = None) -> dict:
+        captured["email"] = email
+        captured["name"] = name
+        return {"ok": True}
+
+    monkeypatch.setattr(neural_nexus_gateway, "signup", fake_signup)
+
+    response = client.post(
+        "/auth/signup",
+        json={"email": "new@example.com", "password": "correct horse", "name": "Ada"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert captured["email"] == "new@example.com"
+    assert captured["name"] == "Ada"
 
 
 def test_anonymous_me_resolves_hashed_ip_customer(client, monkeypatch):

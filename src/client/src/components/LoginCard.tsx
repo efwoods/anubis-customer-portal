@@ -8,77 +8,87 @@ interface LoginCardProps {
   pendingTier?: string | null;
 }
 
+type AuthMode = "signin" | "signup";
+
 export function LoginCard({ onSignedIn, onDismiss, pendingTier }: LoginCardProps) {
+  const isProTrialSignup = pendingTier === "pro";
+  // A pending Pro-trial CTA is a new-account intent, so open on the signup form;
+  // returning users can toggle to sign in.
+  const [mode, setMode] = useState<AuthMode>(isProTrialSignup ? "signup" : "signin");
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [codeRequested, setCodeRequested] = useState(false);
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
 
-  const isProTrialSignup = pendingTier === "pro";
-
-  const requestCode = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
+  const switchMode = (nextMode: AuthMode) => {
+    setMode(nextMode);
     setErrorMessage(null);
-    try {
-      await apiRequest<void>("/auth/request_otp", {
-        method: "POST",
-        body: { email },
-      });
-      setCodeRequested(true);
-    } catch (requestError) {
-      setErrorMessage(
-        requestError instanceof Error ? requestError.message : "Could not send the code.",
-      );
-    } finally {
-      setBusy(false);
-    }
+    setPassword("");
   };
 
-  const verifyCode = async (event: FormEvent) => {
+  const signIn = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setErrorMessage(null);
     try {
-      const verification = await apiRequest<{ token: string }>("/auth/verify_otp", {
+      const session = await apiRequest<{ token: string }>("/auth/login", {
         method: "POST",
-        body: { email, code },
+        body: { email, password },
       });
-      setSessionToken(verification.token);
+      setSessionToken(session.token);
       onSignedIn();
-    } catch (verifyError) {
+    } catch (signInError) {
       setErrorMessage(
-        verifyError instanceof Error ? verifyError.message : "Verification failed.",
+        signInError instanceof Error ? signInError.message : "Sign-in failed.",
       );
     } finally {
       setBusy(false);
     }
   };
+
+  const signUp = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      await apiRequest<{ ok: boolean }>("/auth/signup", {
+        method: "POST",
+        body: { email, password, name: name || null },
+      });
+      setNoticeMessage(
+        "Account created. Check your email to verify it, then sign in below.",
+      );
+      switchMode("signin");
+    } catch (signUpError) {
+      setErrorMessage(
+        signUpError instanceof Error ? signUpError.message : "Sign-up failed.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const heading =
+    mode === "signup"
+      ? isProTrialSignup
+        ? "Sign up for free Pro trial"
+        : "Create an account"
+      : "Sign in";
 
   return (
     <section className="card login-card">
       <div className="card-header-row">
-        <h2>{isProTrialSignup ? "Sign up for free Pro trial" : "Sign in"}</h2>
+        <h2>{heading}</h2>
         <button className="link-button" onClick={onDismiss}>
           Close
         </button>
       </div>
-      {!codeRequested ? (
-        <form onSubmit={requestCode} className="stacked-form">
-          <p>
-            {isProTrialSignup ? (
-              <>
-                Enter the email for your Neural Nexus account. After the one-time
-                code, we open Stripe Checkout for the free Pro trial.
-              </>
-            ) : (
-              <>
-                Enter the email on your Neural Nexus account and we will send a
-                one-time sign-in code.
-              </>
-            )}
-          </p>
+
+      {mode === "signin" ? (
+        <form onSubmit={signIn} className="stacked-form">
+          <p>Sign in with your Neural Nexus email and password.</p>
           <label>
             Email
             <input
@@ -89,47 +99,90 @@ export function LoginCard({ onSignedIn, onDismiss, pendingTier }: LoginCardProps
               placeholder="you@example.com"
             />
           </label>
-          <button className="primary-button" disabled={busy || !email}>
-            {busy ? "Sending…" : "Send code"}
-          </button>
-        </form>
-      ) : (
-        <form onSubmit={verifyCode} className="stacked-form">
-          <p>
-            If an account exists for <strong>{email}</strong>, a 6-digit code was
-            sent. Enter the code below (the code expires in 10 minutes).
-          </p>
           <label>
-            One-time code
+            Password
             <input
-              inputMode="numeric"
-              pattern="[0-9]{6}"
-              maxLength={6}
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               required
-              placeholder="123456"
+              autoComplete="current-password"
             />
           </label>
-          <div className="button-row">
-            <button className="primary-button" disabled={busy || code.length !== 6}>
-              {busy
-                ? "Verifying…"
-                : isProTrialSignup
-                  ? "Verify and start trial"
-                  : "Verify and sign in"}
-            </button>
+          <button className="primary-button" disabled={busy || !email || !password}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+          <p className="muted">
+            Don't have an account?{" "}
             <button
               type="button"
               className="link-button"
-              onClick={() => setCodeRequested(false)}
+              onClick={() => switchMode("signup")}
               disabled={busy}
             >
-              Use a different email
+              Create an account
             </button>
-          </div>
+          </p>
+        </form>
+      ) : (
+        <form onSubmit={signUp} className="stacked-form">
+          <p>
+            {isProTrialSignup ? (
+              <>
+                Create your Neural Nexus account. After verifying your email and
+                signing in, we open Stripe Checkout for the free Pro trial.
+              </>
+            ) : (
+              <>Create your Neural Nexus account with an email and password.</>
+            )}
+          </p>
+          <label>
+            Name (optional)
+            <input
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Ada Lovelace"
+            />
+          </label>
+          <label>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+              placeholder="you@example.com"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              autoComplete="new-password"
+            />
+          </label>
+          <button className="primary-button" disabled={busy || !email || !password}>
+            {busy ? "Creating account…" : "Create account"}
+          </button>
+          <p className="muted">
+            Already have an account?{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => switchMode("signin")}
+              disabled={busy}
+            >
+              Back to sign in
+            </button>
+          </p>
         </form>
       )}
+
+      {noticeMessage ? <p className="notice-text">{noticeMessage}</p> : null}
       {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
     </section>
   );

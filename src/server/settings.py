@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class PortalSettings(BaseSettings):
     # env_ignore_empty: .env files copied from .env.example keep every key with
-    # unset values left empty ("SMTP_PORT="); treat those as "use the default"
+    # unset values left empty ("PORT="); treat those as "use the default"
     # instead of failing integer parsing at startup.
     model_config = SettingsConfigDict(
         env_file=".env", extra="ignore", env_ignore_empty=True
@@ -23,17 +23,15 @@ class PortalSettings(BaseSettings):
 
     # Environment identity -------------------------------------------------
     portal_env: str = "test"  # "test" | "live" — surfaced in the client banner
-    dev: str = "FALSE"  # "TRUE" logs one-time passcodes instead of emailing
+    dev: str = "FALSE"  # "TRUE" pins the anonymous client ip to the dev value
 
     # HTTP ------------------------------------------------------------------
     port: int = 8080
     client_origin: str = "http://localhost:5173"  # comma-separated allowlist
 
-    # Session / one-time passcode -------------------------------------------
+    # Session ---------------------------------------------------------------
     session_signing_secret: str = "change-me"
     session_ttl_hours: int = 24
-    one_time_passcode_ttl_seconds: int = 600
-    one_time_passcode_max_attempts: int = 5
 
     # Stripe ----------------------------------------------------------------
     stripe_secret_key: str = ""
@@ -48,15 +46,8 @@ class PortalSettings(BaseSettings):
     auth0_client_id: str = ""
     auth0_client_secret: str = ""
 
-    # Neural Nexus API (signup link for anonymous users) ---------------------
+    # Neural Nexus API (email + password auth: login / logout / signup) ------
     nn_api_base_url: str = "https://api.neuralnexus.site"
-
-    # One-time passcode email delivery ---------------------------------------
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_from_address: str = ""
 
     @property
     def dev_mode_enabled(self) -> bool:

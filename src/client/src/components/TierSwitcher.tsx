@@ -65,8 +65,8 @@ export function TierSwitcher({
         {mode === "signup" ? (
           <>
             Anonymous usage is tracked by a hash of your network address (the same
-            scheme Neural Nexus uses). Sign up with email to start the free Pro
-            trial — we will send a one-time code, then open Stripe Checkout.
+            scheme Neural Nexus uses). Create an account with email and password to
+            start the free Pro trial, then open Stripe Checkout.
           </>
         ) : (
           <>

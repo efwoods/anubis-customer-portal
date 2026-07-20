@@ -20,7 +20,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from scalar_fastapi import get_scalar_api_reference
 
 from routers import account, auth, billing, invoices, subscription, usage
-from security.one_time_passcode import OneTimePasscodeStore
 from settings import get_portal_settings
 from stripe_gateway.catalog import get_tier_catalog
 from stripe_gateway.client import configure_stripe
@@ -55,12 +54,7 @@ async def _warm_tier_catalog() -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    settings = get_portal_settings()
     configure_stripe()
-    application.state.one_time_passcode_store = OneTimePasscodeStore(
-        ttl_seconds=settings.one_time_passcode_ttl_seconds,
-        max_attempts=settings.one_time_passcode_max_attempts,
-    )
     await _warm_tier_catalog()
     yield
 
@@ -69,9 +63,9 @@ app = FastAPI(
     title="Neural Nexus Customer Portal API",
     description=(
         "Backend-for-frontend for the Neural Nexus customer portal. "
-        "Verified users sign in with an email one-time passcode; anonymous "
-        "visitors are identified by a hashed client ip and see their free-tier "
-        "status and usage read-only."
+        "Verified users sign in with their Neural Nexus email + password; "
+        "anonymous visitors are identified by a hashed client ip and see their "
+        "free-tier status and usage read-only."
     ),
     version="1.0.0",
     lifespan=lifespan,

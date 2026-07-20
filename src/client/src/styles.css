@@ -293,6 +293,11 @@ button:disabled {
   font-size: 14px;
 }
 
+.notice-text {
+  color: var(--color-success, #2e7d32);
+  font-size: 14px;
+}
+
 .error-banner {
   color: var(--color-danger);
 }
