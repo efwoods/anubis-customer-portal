@@ -407,6 +407,11 @@ button:disabled {
   background: color-mix(in srgb, var(--color-primary) 8%, var(--color-card));
 }
 
+.tier-card-pending {
+  border-color: var(--color-warning);
+  border-style: dashed;
+}
+
 .anonymous-notice code {
   font-size: 0.9em;
   color: var(--color-info);

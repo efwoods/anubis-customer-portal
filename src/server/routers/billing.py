@@ -77,13 +77,7 @@ async def remove_payment_method(
 async def get_billing_information(
     identity: CustomerIdentity = Depends(require_verified_identity),
 ) -> dict:
-    customer = await stripe_customers.get_customer(identity.customer_id)
-    return {
-        "name": customer.get("name"),
-        "email": customer.get("email"),
-        "phone": customer.get("phone"),
-        "address": customer.get("address"),
-    }
+    return await stripe_customers.get_billing_information(identity.customer_id)
 
 
 @router.put("/billing_info")

@@ -7,7 +7,7 @@ import {
   useStripe,
 } from "@stripe/react-stripe-js";
 import { apiRequest } from "../api";
-import type { PaymentMethodSummary } from "../types";
+import type { BillingInformation, PaymentMethodSummary } from "../types";
 
 interface PaymentMethodsSectionProps {
   publishableKey: string;
@@ -16,9 +16,11 @@ interface PaymentMethodsSectionProps {
 }
 
 function AddPaymentMethodForm({
+  billingDefaults,
   onSaved,
   onCancel,
 }: {
+  billingDefaults: BillingInformation | null;
   onSaved: () => void;
   onCancel: () => void;
 }) {
@@ -26,6 +28,29 @@ function AddPaymentMethodForm({
   const elements = useElements();
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Seed the card's billing details from the customer's billing information so
+  // a newly added card starts in sync with the billing form.
+  const paymentElementOptions = billingDefaults
+    ? {
+        defaultValues: {
+          billingDetails: {
+            name: billingDefaults.name || undefined,
+            phone: billingDefaults.phone || undefined,
+            address: billingDefaults.address
+              ? {
+                  line1: billingDefaults.address.line1 || undefined,
+                  line2: billingDefaults.address.line2 || undefined,
+                  city: billingDefaults.address.city || undefined,
+                  state: billingDefaults.address.state || undefined,
+                  postal_code: billingDefaults.address.postal_code || undefined,
+                  country: billingDefaults.address.country || undefined,
+                }
+              : undefined,
+          },
+        },
+      }
+    : undefined;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -48,7 +73,7 @@ function AddPaymentMethodForm({
 
   return (
     <form onSubmit={submit} className="stacked-form add-card-form">
-      <PaymentElement />
+      <PaymentElement options={paymentElementOptions} />
       <div className="button-row">
         <button className="primary-button" disabled={busy || !stripe}>
           {busy ? "Saving…" : "Save card"}
@@ -69,6 +94,9 @@ export function PaymentMethodsSection({
 }: PaymentMethodsSectionProps) {
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodSummary[]>([]);
   const [setupClientSecret, setSetupClientSecret] = useState<string | null>(null);
+  const [billingDefaults, setBillingDefaults] = useState<BillingInformation | null>(
+    null,
+  );
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -92,10 +120,13 @@ export function PaymentMethodsSection({
   const startAddCard = async () => {
     setErrorMessage(null);
     try {
-      const setupIntent = await apiRequest<{ client_secret: string }>(
-        "/payment_methods/setup_intent",
-        { method: "POST" },
-      );
+      const [setupIntent, billingInformation] = await Promise.all([
+        apiRequest<{ client_secret: string }>("/payment_methods/setup_intent", {
+          method: "POST",
+        }),
+        apiRequest<BillingInformation>("/billing_info").catch(() => null),
+      ]);
+      setBillingDefaults(billingInformation);
       setSetupClientSecret(setupIntent.client_secret);
     } catch (setupError) {
       setErrorMessage(
@@ -191,6 +222,7 @@ export function PaymentMethodsSection({
           options={{ clientSecret: setupClientSecret }}
         >
           <AddPaymentMethodForm
+            billingDefaults={billingDefaults}
             onSaved={() => {
               setSetupClientSecret(null);
               onChanged();

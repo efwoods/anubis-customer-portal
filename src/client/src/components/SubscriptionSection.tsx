@@ -128,6 +128,16 @@ export function SubscriptionSection({
   );
   const isTrialing = subscription.status === "trialing";
   const cancelDate = subscription.cancel_at || subscription.current_period_end;
+  const pendingDowngradeEntry = subscription.pending_downgrade_tier
+    ? subscription.tier_catalog.find(
+        (entry) => entry.tier === subscription.pending_downgrade_tier,
+      )
+    : undefined;
+  const pendingDowngradeName =
+    pendingDowngradeEntry?.display_name ||
+    (subscription.pending_downgrade_tier
+      ? `${subscription.pending_downgrade_tier[0].toUpperCase()}${subscription.pending_downgrade_tier.slice(1)} tier`
+      : null);
 
   return (
     <section className="card">
@@ -135,6 +145,10 @@ export function SubscriptionSection({
         <h2>Current subscription</h2>
         {subscription.cancel_at_period_end ? (
           <span className="badge badge-warning">Cancels {formatDate(cancelDate)}</span>
+        ) : pendingDowngradeName ? (
+          <span className="badge badge-warning">
+            Switches to {pendingDowngradeName} {formatDate(subscription.current_period_end)}
+          </span>
         ) : isTrialing ? (
           <span className="badge badge-info">
             Free trial ends {formatDate(subscription.trial_end)}
@@ -169,14 +183,42 @@ export function SubscriptionSection({
 
       {subscription.cancel_at_period_end ? (
         <>
-          <p>Your service will end on {formatDate(cancelDate)}.</p>
+          <p>
+            Your <strong>{tierEntry?.display_name || subscription.tier}</strong> plan
+            stays active until {formatDate(cancelDate)}, then the account drops to the
+            free tier. Your current allotment continues until then.
+          </p>
           {isVerified ? (
             <button
               className="primary-button"
               disabled={busyAction !== null}
               onClick={() => runAction("reactivate", "/subscription/reactivate")}
             >
-              {busyAction === "reactivate" ? "Working…" : "Don't cancel subscription"}
+              {busyAction === "reactivate" ? "Working…" : "Keep my plan"}
+            </button>
+          ) : null}
+        </>
+      ) : pendingDowngradeName ? (
+        <>
+          <p>
+            Your <strong>{tierEntry?.display_name || subscription.tier}</strong> plan is
+            active until {formatDate(subscription.current_period_end)}, then it switches
+            to <strong>{pendingDowngradeName}</strong>. Your current allotment continues
+            until then.
+          </p>
+          {isVerified ? (
+            <button
+              className="primary-button"
+              disabled={busyAction !== null}
+              onClick={() =>
+                runAction(`keep:${subscription.tier}`, "/subscription/change", {
+                  tier: subscription.tier,
+                })
+              }
+            >
+              {busyAction === `keep:${subscription.tier}`
+                ? "Working…"
+                : `Keep ${tierEntry?.display_name || subscription.tier} plan`}
             </button>
           ) : null}
         </>

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import urllib.parse
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import auth0_gateway
@@ -38,6 +39,37 @@ def _iso_from_epoch(epoch_seconds: int | None) -> str | None:
     return datetime.datetime.fromtimestamp(
         epoch_seconds, tz=datetime.timezone.utc
     ).isoformat()
+
+
+def _resolve_return_origin(request: Request) -> str:
+    """The origin Stripe Checkout should redirect back to.
+
+    The redirect must land the user back on whichever client actually started
+    the flow — not a hardcoded first-in-allowlist origin. We take the request's
+    ``Origin`` (falling back to ``Referer``), accept it only when it is in the
+    configured allowlist, and otherwise fall back to the first configured
+    origin. This is what prevents the "Server Not Found" dead-end and the
+    Firefox local-network permission prompt when the fixed default origin is
+    unreachable from the user's browser.
+    """
+    settings = get_portal_settings()
+    allowlist = settings.client_origin_list
+    candidate_origins: list[str] = []
+    origin_header = request.headers.get("origin")
+    if origin_header:
+        candidate_origins.append(origin_header.rstrip("/"))
+    referer_header = request.headers.get("referer")
+    if referer_header:
+        parsed_referer = urllib.parse.urlsplit(referer_header)
+        if parsed_referer.scheme and parsed_referer.netloc:
+            candidate_origins.append(
+                f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+            )
+    allowlist_normalized = {origin.rstrip("/"): origin for origin in allowlist}
+    for candidate in candidate_origins:
+        if candidate in allowlist_normalized:
+            return allowlist_normalized[candidate]
+    return allowlist[0]
 
 
 def _validate_tier(tier: str) -> str:
@@ -108,6 +140,11 @@ async def get_subscription_status(
                 "monthly_base_fee_usd": (catalog.get(tier) or {}).get(
                     "monthly_base_fee_usd", 0.0
                 ),
+                "pending_downgrade_tier": (
+                    await stripe_subscriptions.get_pending_downgrade_tier(
+                        subscription, catalog
+                    )
+                ),
             }
         )
     response["pay_per_use_enabled"] = await _resolve_pay_per_use_enabled(
@@ -119,6 +156,7 @@ async def get_subscription_status(
 @router.post("/subscription/checkout")
 async def create_subscription_checkout(
     body: TierChangeBody,
+    request: Request,
     identity: CustomerIdentity = Depends(require_verified_identity),
 ) -> dict:
     """Create a Stripe Checkout session when no live subscription exists."""
@@ -133,7 +171,6 @@ async def create_subscription_checkout(
             "(POST /subscription/change) instead of checkout.",
         )
     catalog = await get_tier_catalog()
-    settings = get_portal_settings()
     customer = await stripe_customers.get_customer(identity.customer_id)
     trial_already_used = await stripe_subscriptions.customer_has_used_trial(
         customer, identity.customer_id
@@ -142,7 +179,7 @@ async def create_subscription_checkout(
         identity.customer_id,
         target_tier,
         catalog,
-        settings.client_origin_list[0],
+        _resolve_return_origin(request),
         include_trial=not trial_already_used,
     )
     return {
@@ -155,6 +192,7 @@ async def create_subscription_checkout(
 @router.post("/subscription/change")
 async def change_subscription_tier(
     body: TierChangeBody,
+    request: Request,
     identity: CustomerIdentity = Depends(require_verified_identity),
 ) -> dict:
     """Switch tiers, mirroring the Neural Nexus API's /subscribe semantics.
@@ -174,7 +212,7 @@ async def change_subscription_tier(
     )
 
     if subscription is None:
-        return await create_subscription_checkout(body, identity)
+        return await create_subscription_checkout(body, request, identity)
 
     current_tier = stripe_subscriptions.subscription_tier(subscription, catalog)
     cancellation_pending = bool(subscription.get("cancel_at_period_end"))
@@ -292,5 +330,7 @@ async def set_pay_per_use(
                 detail="Pay-per-use requires a payment method on file. Add a card "
                 "in the Payment method section first.",
             )
-    await auth0_gateway.write_pay_per_use_enabled(identity.email, body.enabled)
-    return {"pay_per_use_enabled": body.enabled}
+    stored_enabled = await auth0_gateway.write_pay_per_use_enabled(
+        identity.email, body.enabled
+    )
+    return {"pay_per_use_enabled": stored_enabled}

@@ -30,11 +30,23 @@ function formatOverageRate(meter: TierCatalogMeter): string {
   return "";
 }
 
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) {
+    return "the end of the current period";
+  }
+  return new Date(isoDate).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
 function buttonLabel(
   mode: "switch" | "signup",
   tier: string,
   isCurrent: boolean,
-  cancelAtPeriodEnd: boolean,
+  hasPendingChange: boolean,
+  isPendingTarget: boolean,
   trialPeriodDays: number,
 ): string {
   if (mode === "signup") {
@@ -47,7 +59,10 @@ function buttonLabel(
     return "Sign in to subscribe";
   }
   if (isCurrent) {
-    return cancelAtPeriodEnd ? "Keep this plan" : "Current plan";
+    return hasPendingChange ? "Keep this plan" : "Current plan";
+  }
+  if (isPendingTarget) {
+    return "Scheduled";
   }
   return "Switch to this plan";
 }
@@ -78,11 +93,18 @@ export function TierSwitcher({
       <div className="tier-grid">
         {subscription.tier_catalog.map((tierEntry) => {
           const isCurrent = tierEntry.tier === subscription.tier;
+          const hasPendingChange =
+            subscription.cancel_at_period_end ||
+            subscription.pending_downgrade_tier !== null;
+          const isPendingTarget =
+            mode === "switch" &&
+            tierEntry.tier === subscription.pending_downgrade_tier;
           const label = buttonLabel(
             mode,
             tierEntry.tier,
             isCurrent,
-            subscription.cancel_at_period_end,
+            hasPendingChange,
+            isPendingTarget,
             tierEntry.trial_period_days,
           );
           const isProTrialCta =
@@ -92,17 +114,30 @@ export function TierSwitcher({
             !isCurrent;
           const disabled =
             busy ||
-            (mode === "switch" && isCurrent && !subscription.cancel_at_period_end) ||
+            (mode === "switch" && isCurrent && !hasPendingChange) ||
+            (mode === "switch" && isPendingTarget) ||
             (mode === "signup" && isCurrent);
+          const effectiveDate = formatDate(subscription.current_period_end);
 
           return (
             <div
               key={tierEntry.tier}
               className={`tier-card${isCurrent ? " tier-card-current" : ""}${
                 isProTrialCta ? " tier-card-highlight" : ""
-              }`}
+              }${isPendingTarget ? " tier-card-pending" : ""}`}
             >
               <h4>{tierEntry.display_name}</h4>
+              {mode === "switch" && isCurrent && !hasPendingChange ? (
+                <p className="badge badge-success">✓ Active plan</p>
+              ) : null}
+              {mode === "switch" && isCurrent && hasPendingChange ? (
+                <p className="badge badge-warning">
+                  Active until {effectiveDate}
+                </p>
+              ) : null}
+              {isPendingTarget ? (
+                <p className="badge badge-info">Starts {effectiveDate}</p>
+              ) : null}
               <p className="tier-price">
                 {tierEntry.monthly_base_fee_usd > 0
                   ? `$${tierEntry.monthly_base_fee_usd.toFixed(2)}/month`

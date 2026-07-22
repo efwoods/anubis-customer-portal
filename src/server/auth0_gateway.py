@@ -72,7 +72,22 @@ async def _find_user_by_email(email: str) -> dict | None:
         )
     response.raise_for_status()
     user_list = response.json()
-    return user_list[0] if user_list else None
+    if not user_list:
+        return None
+    if len(user_list) > 1:
+        # More than one Auth0 identity carries this email (e.g. a database and a
+        # social connection). We patch the first, but the Neural Nexus API's
+        # api-key lookup may resolve a different identity — surface it so a
+        # "pay-per-use won't change" report can be traced to the right record.
+        logger.warning(
+            "Auth0 returned %d users for email %s; using user_id=%s. If the "
+            "pay-per-use flag does not take effect, the api-key may resolve a "
+            "different identity.",
+            len(user_list),
+            email,
+            user_list[0].get("user_id"),
+        )
+    return user_list[0]
 
 
 def infer_pay_per_use_enabled(subscription_status: str | None) -> bool:
@@ -97,7 +112,13 @@ async def read_pay_per_use_enabled(email: str) -> bool | None:
     return bool(flag_value)
 
 
-async def write_pay_per_use_enabled(email: str, enabled: bool) -> None:
+async def write_pay_per_use_enabled(email: str, enabled: bool) -> bool:
+    """Persist the pay-per-use flag and return the value Auth0 actually stored.
+
+    Returning the stored value (rather than echoing the request) lets the
+    caller confirm the write took effect and surfaces a silent no-op instead of
+    reporting success the Neural Nexus API will not see.
+    """
     if not auth0_is_configured():
         raise HTTPException(
             status_code=503,
@@ -120,3 +141,6 @@ async def write_pay_per_use_enabled(email: str, enabled: bool) -> None:
             json={"app_metadata": {"pay_per_use_enabled": enabled}},
         )
     response.raise_for_status()
+    stored_user = response.json()
+    stored_flag = (stored_user.get("app_metadata") or {}).get("pay_per_use_enabled")
+    return bool(stored_flag)

@@ -207,7 +207,10 @@ export default function App() {
             refreshCounter={refreshCounter}
             onChanged={refreshDashboard}
           />
-          <BillingInformationSection refreshCounter={refreshCounter} />
+          <BillingInformationSection
+            publishableKey={configuration.publishable_key}
+            refreshCounter={refreshCounter}
+          />
           <InvoiceHistorySection refreshCounter={refreshCounter} />
         </>
       ) : null}
@@ -220,6 +223,7 @@ export default function App() {
         <a href="https://stripe.com/privacy" target="_blank" rel="noreferrer">
           Privacy
         </a>
+        <a href="mailto:support@neuralnexus.site">Support</a>
       </footer>
     </div>
   );

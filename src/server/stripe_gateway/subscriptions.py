@@ -217,6 +217,55 @@ async def schedule_downgrade_at_period_end(
     return await asyncio.to_thread(_create_schedule)
 
 
+async def get_pending_downgrade_tier(
+    subscription: dict, catalog: dict
+) -> str | None:
+    """The tier the subscription will move to at the period boundary, if any.
+
+    A pending cancellation drops the account to the free tier; a scheduled
+    downgrade to a paid tier is encoded as the schedule's next phase. Returns
+    None when nothing is pending.
+    """
+    if subscription.get("cancel_at_period_end"):
+        return "free"
+
+    schedule_id = subscription.get("schedule")
+    if not schedule_id:
+        return None
+
+    current_tier = subscription_tier(subscription, catalog)
+
+    def _next_phase_tier() -> str | None:
+        schedule = stripe.SubscriptionSchedule.retrieve(schedule_id).to_dict()
+        if schedule.get("status") not in ("active", "not_started"):
+            return None
+        phases = schedule.get("phases", [])
+        if len(phases) < 2:
+            return None
+        next_phase = phases[-1]
+        metadata_tier = (next_phase.get("metadata") or {}).get(
+            SUBSCRIPTION_TIER_METADATA_KEY
+        )
+        if metadata_tier in catalog:
+            tier = metadata_tier
+        else:
+            phase_price_ids = {
+                item.get("price") for item in next_phase.get("items", [])
+            }
+            tier = next(
+                (
+                    candidate_tier
+                    for candidate_tier, tier_entry in catalog.items()
+                    if tier_entry.get("base_price_id") in phase_price_ids
+                ),
+                None,
+            )
+        # Only surface it as pending when it actually differs from today's tier.
+        return tier if tier and tier != current_tier else None
+
+    return await asyncio.to_thread(_next_phase_tier)
+
+
 async def set_cancel_at_period_end(subscription_id: str, cancel: bool) -> dict:
     return await asyncio.to_thread(
         lambda: stripe.Subscription.modify(

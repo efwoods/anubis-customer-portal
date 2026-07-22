@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "../api";
 import type { SubscriptionStatus, UsageReport } from "../types";
 import { PayPerUseToggle } from "./PayPerUseToggle";
@@ -9,6 +9,12 @@ interface UsageSectionProps {
   refreshCounter: number;
   onChanged: () => void;
 }
+
+// Usage is spent in the chat app, not this portal, so it drifts stale between
+// portal-driven refreshes. Re-read it on a light interval and whenever the tab
+// regains focus so the meters track the live counter (within Stripe's meter
+// aggregation lag).
+const USAGE_POLL_INTERVAL_MS = 20_000;
 
 function formatDate(isoDate: string): string {
   return new Date(isoDate).toLocaleDateString(undefined, {
@@ -23,9 +29,12 @@ export function UsageSection({ isVerified, refreshCounter, onChanged }: UsageSec
   const [payPerUseEnabled, setPayPerUseEnabled] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadUsage = useCallback(() => {
     apiRequest<UsageReport>("/usage")
-      .then(setUsage)
+      .then((report) => {
+        setUsage(report);
+        setErrorMessage(null);
+      })
       .catch((usageError) =>
         setErrorMessage(
           usageError instanceof Error ? usageError.message : "Could not load usage.",
@@ -36,7 +45,30 @@ export function UsageSection({ isVerified, refreshCounter, onChanged }: UsageSec
         .then((subscription) => setPayPerUseEnabled(subscription.pay_per_use_enabled))
         .catch(() => undefined);
     }
-  }, [refreshCounter, isVerified]);
+  }, [isVerified]);
+
+  useEffect(() => {
+    loadUsage();
+  }, [loadUsage, refreshCounter]);
+
+  // Keep the meters current without a manual reload: poll on an interval and
+  // refetch immediately when the user returns to the tab. Polling pauses while
+  // the tab is hidden to avoid pointless background requests.
+  useEffect(() => {
+    const refetchIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        loadUsage();
+      }
+    };
+    const intervalId = window.setInterval(refetchIfVisible, USAGE_POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", refetchIfVisible);
+    window.addEventListener("focus", refetchIfVisible);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", refetchIfVisible);
+      window.removeEventListener("focus", refetchIfVisible);
+    };
+  }, [loadUsage]);
 
   return (
     <section className="card">
