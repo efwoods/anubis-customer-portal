@@ -5,13 +5,19 @@
 #
 # The portal-server container is the backend-for-frontend the Vercel client
 # calls; the cloudflared container exposes it to the public internet on the
-# hostname configured for the tunnel (e.g. checkout-api.neuralnexus.site).
+# hostname configured for the tunnel (checkout-api.neuralnexus.site), reaching
+# the server over the compose network at http://portal-server:8080.
+#
+# Both services read the same env file, selected by COMPOSE_ENV_FILE (defaults
+# to .env.dev; set to .env.live in the live env file for
+# `COMPOSE_ENV_FILE=.env.live docker compose up`). cloudflared authenticates
+# with TUNNEL_TOKEN, which it reads natively from its environment.
 
 services:
   portal-server:
     build: .
     env_file:
-      - .env.dev
+      - ${COMPOSE_ENV_FILE:-.env.dev}
     ports:
       - "${PORT:-8200}:8080"
     restart: unless-stopped
@@ -23,7 +29,9 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - ${COMPOSE_ENV_FILE:-.env.dev}
+    command: tunnel --no-autoupdate run
     restart: unless-stopped
     depends_on:
       - portal-server
