@@ -497,3 +497,72 @@ curl /verify_subscription_status \
       "overage_price_per_unit_usd": 5.0
     }
   }
+
+
+#  I need to know how many free-trial tokens I have used (will match pro-tier message and document usage limits unless the tier changes (during a free-trial; the user retains all pro-tier limits on free-tier and the allotment carries to premium (premium exhausts free-trial usage before premium tier usage; free-trial usage does not carry over to continue an additional month or for duplicate free trials)))
+paying for premium then downgrading retains all premium usage until the next billing cycle
+
+I need to know at a glance page-per-use beyond free tier.
+
+
+
+
+# Bug
+Messaging tokens are not updating on use or after use:
+Usage this period
+Jul 22, 2026 – Aug 21, 2026
+
+
+Free trial: this usage is free up to the full pro-tier allotment shown below.
+Document upload tokens0 / 10,000,000 tokens
+10,000,000 tokens remaining$3.00 per 1,000,000 tokens over allotment
+Messaging tokens0 / 5,000,000 tokens
+5,000,000 tokens remaining$1.50 per 1,000,000 tokens over allotment
+Pay-per-use past allotment
+
+Requests stop once a meter's monthly allotment is exhausted (HTTP 402).
+
+
+
+curl /message/19fd6101-cedb-41e3-a742-3a4d9a555783 \
+  --request POST \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: multipart/form-data' \
+  --header 'API-KEY: sk-eNFnpaXdVPYiVTRBhAKBL347p1NHwEiSj2pnzMmS-oQ' \
+  --form 'message=test' \
+  --form 'your_name=' \
+  --form 'your_description=' \
+  --form 'conversation_title=' \
+  --form 'files=[""]' \
+  --form 'thread_id=' \
+  --form 'stream=true' \
+  --form 'feedback=false' \
+  --form 'like=false' \
+  --form 'dislike=false' \
+  --form 'user_timezone=' \
+  --form 'include_quality_metrics=true' \
+  --form 'include_usage_metrics=true' \
+  --form 'adapter=false'
+
+
+
+data: {"type": "usage_estimate", "input_tokens": 20834, "usage": {"meter": "messaging_tokens", "tier": "pro", "monthly_allotment": 5000000, "used_to_date": 0, "remaining": 5000000, "pay_per_use_enabled": false, "usage_period_start": "2026-07-22T14:55:45.330562+00:00", "usage_period_end": "2026-08-22T14:55:45.330562+00:00"}, "thread_id": "48544046-53c7-4fd9-bd24-b30c5c341f95", "request_id": "3687c55e-8233-4004-81a9-f66b24105f0b"}
+
+data: {"type": "assistant_token", "text": "Hey"}
+
+data: {"type": "assistant_token", "text": "\u2014"}
+
+data: {"type": "assistant_token", "text": "what"}
+
+data: {"type": "assistant_token", "text": "\u2019s"}
+
+data: {"type": "assistant_token", "text": " up"}
+
+data: {"type": "assistant_token", "text": "?"}
+
+: keepalive
+
+data: {"type": "done", "content": "Hey\u2014what\u2019s up?", "thread_id": "48544046-53c7-4fd9-bd24-b30c5c341f95", "request_id": "3687c55e-8233-4004-81a9-f66b24105f0b", "total_response_time_ms": 15362, "response_metadata": {"finish_reason": "stop", "model_name": "gpt-5.4-nano-2026-03-17", "service_tier": "default", "model_provider": "openai", "sentiment": {"base_emotion": "neutral", "emotion": "neutral", "score": 0.5597519278526306}, "token_usage": {"prompt_tokens": 21170, "completion_tokens": 9, "total_tokens": 21179}, "features": {"moving_average_ttr": 1.0, "mtld_lexical_diversity": 3.0, "hdd_lexical_diversity": 1.0, "lexical_density_content_word_ratio": 0.5, "noun_density": 0.16666666666666666, "verb_density": 0.3333333333333333, "adjective_density": 0.0, "adverb_density": 0.0, "pronoun_density": 0.16666666666666666, "preposition_density": 0.0, "noun_to_verb_ratio": 0.6666666666666666, "mean_sentence_length_words": 3.0, "stdev_sentence_length_words": 0.0, "interrogative_sentence_ratio": 1.0, "exclamatory_sentence_ratio": 0.0, "comma_rate_per_word": 0.0, "semicolon_rate_per_word": 0.0, "colon_rate_per_word": 0.0, "dash_rate_per_word": 0.3333333333333333, "ellipsis_rate_per_word": 0.0, "exclamation_rate_per_word": 0.0, "question_mark_rate_per_word": 0.3333333333333333, "all_caps_word_ratio": 0.0, "words_per_paragraph": 3.0, "transition_word_rate_per_word": 0.0, "lexical_entropy_bits": 1.584962500721156, "average_word_length_characters": 3.6666666666666665, "key_phrase_rate": 0.0, "key_phrase_rate_description": "The key_phrase_rate is the rate of detected avatar signature key phrases per total word when compared against the ground truth dataset (direct quotes of the avatar), and is the rate of baseline ChatGPT signature key phrases per total word when compared against the baseline ChatGPT dataset."}, "comparison_to_unmodified_llm_response_analysis": {"no_statistically_significantly_difference_from_unmodified_llm_response_using_squared_mahalanobis_distance": false, "unmodified_llm_comparison_isolation_forest_shap_values": {"hdd_lexical_diversity": -0.1408546633695867, "verb_density": -0.17661529729807254, "adjective_density": -0.19007058549066028, "adverb_density": -0.1703055826947579, "pronoun_density": -0.15073443698645472, "interrogative_sentence_ratio": -0.27353189152487084, "dash_rate_per_word": -0.1558936438018881, "question_mark_rate_per_word": -0.3040891934713983, "lexical_entropy_bits": -0.21504872712512824, "average_word_length_characters": -0.13589945649805202}, "unmodified_llm_comparison_isolation_forest_shap_values_description": "Negative values indicate dissimilarity from unmodified llm dataset. Positive values indicate similarity to unmodified llm responses. Scale is -1 to 1.", "no_statistically_significant_difference_between_sample_and_unmodified_llm_according_to_isolation_forest": false}}, "usage": {"prompt_tokens": 21170, "completion_tokens": 9, "total_tokens": 21179, "meter": "messaging_tokens", "tier": "pro", "monthly_allotment": 5000000, "used_to_date": 21179, "remaining": 4978821, "pay_per_use_enabled": false, "usage_period_start": "2026-07-22T14:55:45.330562+00:00", "usage_period_end": "2026-08-22T14:55:45.330562+00:00"}}
+
+
+
