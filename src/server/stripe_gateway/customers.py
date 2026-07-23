@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import stripe
+
+logger = logging.getLogger(__name__)
 
 
 async def find_customer_by_email(email: str) -> dict | None:
@@ -44,6 +47,40 @@ async def find_customer_id_by_anonymous_hashed_ip(hashed_ip: str) -> str | None:
             return None
 
     return await asyncio.to_thread(_search)
+
+
+async def mirror_pay_per_use_flag_to_stripe(customer_id: str, enabled: bool) -> None:
+    """Publish the pay-per-use switch into Stripe customer metadata.
+
+    Writing the flag to Auth0 alone is not enough for it to take effect
+    promptly: the Neural Nexus API caches api-key → user lookups for five
+    minutes, and only its own writes evict that cache. Subscription changes feel
+    instant precisely because Stripe emits a webhook the Neural Nexus API
+    handles — so pay-per-use travels the same road. Setting this metadata emits
+    ``customer.updated``, whose handler writes the flag into Auth0 on the Neural
+    Nexus side and evicts the cache there, making the toggle effective on the
+    very next request.
+
+    Best-effort: Auth0 remains the store of record, so a Stripe failure only
+    costs promptness (the flag still lands within the cache TTL) and must not
+    fail the user's toggle.
+    """
+
+    def _write_metadata() -> None:
+        stripe.Customer.modify(
+            customer_id,
+            metadata={"pay_per_use_enabled": "true" if enabled else "false"},
+        )
+
+    try:
+        await asyncio.to_thread(_write_metadata)
+    except Exception as mirror_error:  # noqa: BLE001 - promptness only
+        logger.warning(
+            "Could not mirror the pay-per-use flag into Stripe metadata for %s; "
+            "the Neural Nexus API will pick it up within its cache TTL instead: %s",
+            customer_id,
+            mirror_error,
+        )
 
 
 async def get_customer(customer_id: str) -> dict:

@@ -15,10 +15,18 @@ sync with everything done here — the portal never writes subscription status.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import stripe
 
-from stripe_gateway.catalog import catalog_prices_for_tier, tier_rank
+from stripe_gateway.catalog import (
+    catalog_prices_for_tier,
+    catalog_trial_tier,
+    tier_rank,
+)
+from stripe_gateway.payment_methods import reconcile_payment_methods
+
+logger = logging.getLogger(__name__)
 
 SUBSCRIPTION_TIER_METADATA_KEY = "neural_nexus_tier"
 TRIAL_USED_CUSTOMER_METADATA_KEY = "neural_nexus_trial_used"
@@ -110,12 +118,21 @@ async def create_checkout_session(
     billing vehicle). A pro trial does not require a card up front; the trial
     cancels at its end when no payment method was added (the Neural Nexus API
     webhook then drops the customer to the free tier).
+
+    Saved cards are reconciled and then explicitly offered
+    (``saved_payment_method_options``) so a customer who already has a card on
+    file sees it here instead of an empty card form — and therefore does not
+    retype the same card into a duplicate PaymentMethod. See
+    ``payment_methods.reconcile_payment_methods`` for why the default Stripe
+    behavior hides those cards.
     """
     ordered_price_ids = catalog_prices_for_tier(catalog, tier)
     line_items = [{"price": ordered_price_ids[0], "quantity": 1}] + [
         {"price": price_id} for price_id in ordered_price_ids[1:]
     ]
     trial_period_days = catalog[tier].get("trial_period_days", 0)
+
+    await reconcile_payment_methods(customer_id)
 
     checkout_parameters: dict = {
         "mode": "subscription",
@@ -125,6 +142,10 @@ async def create_checkout_session(
         "cancel_url": f"{client_base_url}?checkout=canceled",
         "subscription_data": {
             "metadata": {SUBSCRIPTION_TIER_METADATA_KEY: tier},
+        },
+        "saved_payment_method_options": {
+            "payment_method_save": "enabled",
+            "allow_redisplay_filters": ["always", "limited", "unspecified"],
         },
     }
     if tier == "free":
@@ -136,9 +157,27 @@ async def create_checkout_session(
             "end_behavior": {"missing_payment_method": "cancel"}
         }
 
-    return await asyncio.to_thread(
-        lambda: stripe.checkout.Session.create(**checkout_parameters).to_dict()
-    )
+    def _create_session() -> dict:
+        try:
+            return stripe.checkout.Session.create(**checkout_parameters).to_dict()
+        except stripe.error.InvalidRequestError as invalid_request_error:
+            # ``allow_redisplay_filters`` postdates the pinned API version on
+            # some accounts. Reconciling already promoted every saved card to
+            # allow_redisplay="always", which Checkout prefills by default, so
+            # dropping the filter costs nothing — but losing the session would.
+            if "allow_redisplay_filters" not in str(invalid_request_error):
+                raise
+            logger.info(
+                "Stripe rejected allow_redisplay_filters; retrying checkout "
+                "without it (saved cards are already marked always-reusable)."
+            )
+            retry_parameters = dict(checkout_parameters)
+            retry_parameters["saved_payment_method_options"] = {
+                "payment_method_save": "enabled"
+            }
+            return stripe.checkout.Session.create(**retry_parameters).to_dict()
+
+    return await asyncio.to_thread(_create_session)
 
 
 async def release_pending_schedule(subscription: dict) -> None:
@@ -155,10 +194,20 @@ async def release_pending_schedule(subscription: dict) -> None:
     await asyncio.to_thread(_release)
 
 
-async def upgrade_subscription_items(
-    subscription: dict, target_tier: str, catalog: dict
+async def swap_subscription_items_immediately(
+    subscription: dict,
+    target_tier: str,
+    catalog: dict,
+    proration_behavior: str = "create_prorations",
 ) -> dict:
-    """Immediately swap every subscription item to the target tier's prices."""
+    """Immediately replace every subscription item with the target tier's prices.
+
+    ``proration_behavior`` is ``create_prorations`` for an ordinary upgrade (the
+    customer owes the difference for the rest of the period) and ``none`` when
+    the money has already been settled another way — notably a refund, where
+    charging or crediting a proration on top of the refund would double-count
+    it.
+    """
     ordered_price_ids = catalog_prices_for_tier(catalog, target_tier)
     existing_items = (subscription.get("items", {}) or {}).get("data", [])
     replacement_items = [
@@ -171,9 +220,33 @@ async def upgrade_subscription_items(
         lambda: stripe.Subscription.modify(
             subscription["id"],
             items=replacement_items,
-            proration_behavior="create_prorations",
+            proration_behavior=proration_behavior,
             metadata={SUBSCRIPTION_TIER_METADATA_KEY: target_tier},
         ).to_dict()
+    )
+
+
+async def upgrade_subscription_items(
+    subscription: dict, target_tier: str, catalog: dict
+) -> dict:
+    """Immediately swap every subscription item to the target tier's prices."""
+    return await swap_subscription_items_immediately(
+        subscription, target_tier, catalog, proration_behavior="create_prorations"
+    )
+
+
+async def cancel_subscription_immediately(subscription_id: str) -> dict:
+    """End a subscription right now rather than at the period boundary.
+
+    Used by the refund flow: a refunded paid period must stop granting the paid
+    allotment at once, not at the end of a month the customer is no longer
+    paying for. Deleting the subscription fires ``customer.subscription.deleted``,
+    which is what the Neural Nexus API listens to in order to pin the account to
+    the free tier, restart its usage window, and record the canceled tier so a
+    resubscribe inside the same period can retain what was already paid for.
+    """
+    return await asyncio.to_thread(
+        lambda: stripe.Subscription.delete(subscription_id).to_dict()
     )
 
 
@@ -277,3 +350,57 @@ async def set_cancel_at_period_end(subscription_id: str, cancel: bool) -> dict:
 def compare_tiers(current_tier: str, target_tier: str) -> int:
     """Negative → downgrade, zero → same, positive → upgrade."""
     return tier_rank(target_tier) - tier_rank(current_tier)
+
+
+async def apply_refund_to_subscription(customer_id: str, catalog: dict) -> dict:
+    """Bring the subscription in line with a refund that was just issued.
+
+    A refund that leaves the subscription running would hand the customer a paid
+    period they no longer paid for, so every refund settles the subscription too.
+    What "settle" means depends on whether the refunded period was a free trial:
+
+    * **Not trialing (paid pro or premium)** — the subscription ends IMMEDIATELY.
+      The Neural Nexus API's ``customer.subscription.deleted`` webhook then pins
+      the account to the free tier, resets its usage window to the free-tier
+      allotment at once, and records the canceled tier so resubscribing inside
+      the same period retains what was already paid for.
+    * **Trialing on the tier that granted the trial (pro)** — the trial is left
+      alone and the subscription is set to end at the period boundary. The
+      customer keeps the free-trial allotment they were given, and the account
+      becomes free tier when the period closes.
+    * **Trialing on a tier ABOVE the one that granted the trial (premium)** —
+      only the paid upgrade is unwound: the subscription drops to the trial tier
+      immediately (so premium's allotment stops right away), the free trial
+      itself is retained to the period boundary at the trial tier's allotment,
+      and the account becomes free tier when the period closes. No proration is
+      created, because the refund already returned the money.
+
+    Returns a description of what happened for the response message; a customer
+    with no live subscription yields ``{"action": "none"}``.
+    """
+    subscription = await get_current_subscription(customer_id)
+    if subscription is None:
+        return {"action": "none", "tier": None}
+
+    current_tier = subscription_tier(subscription, catalog)
+    if subscription.get("status") != "trialing":
+        await release_pending_schedule(subscription)
+        await cancel_subscription_immediately(subscription["id"])
+        return {"action": "canceled_immediately", "tier": current_tier}
+
+    trial_tier = catalog_trial_tier(catalog) or current_tier
+    await release_pending_schedule(subscription)
+    downgraded_to_trial_tier = compare_tiers(current_tier, trial_tier) < 0
+    if downgraded_to_trial_tier:
+        await swap_subscription_items_immediately(
+            subscription, trial_tier, catalog, proration_behavior="none"
+        )
+    await set_cancel_at_period_end(subscription["id"], cancel=True)
+    return {
+        "action": (
+            "downgraded_to_trial_tier_and_ends_at_period_end"
+            if downgraded_to_trial_tier
+            else "ends_at_period_end"
+        ),
+        "tier": trial_tier,
+    }

@@ -7,8 +7,18 @@ flag has never been set, the Neural Nexus API infers pay-per-use only for an
 ``active`` (not trialing) subscription; ``infer_pay_per_use_enabled`` mirrors
 that so both systems answer consistently.
 
-Note: the Neural Nexus API caches api-key → user lookups for five minutes, so
-a toggle can take up to five minutes to affect request gating there.
+Auth0 is the store of record for that flag, but writing it here alone is slow to
+take effect: the Neural Nexus API caches api-key → user lookups for five minutes
+and only its own writes evict that cache. The portal therefore also mirrors the
+flag into Stripe customer metadata
+(``stripe_gateway.customers.mirror_pay_per_use_flag_to_stripe``), whose
+``customer.updated`` event the Neural Nexus webhook turns into an immediate
+eviction — the same propagation path that already makes subscription changes
+feel instant.
+
+This module also reads ``usage_period_anchor``, which the Neural Nexus API uses
+to decide the window its allotment gating counts usage over; the portal
+reproduces that window so its meters and that API's 402s agree.
 """
 
 from __future__ import annotations
@@ -95,21 +105,45 @@ def infer_pay_per_use_enabled(subscription_status: str | None) -> bool:
     return subscription_status == "active"
 
 
-async def read_pay_per_use_enabled(email: str) -> bool | None:
-    """Explicit flag from Auth0 app_metadata, or None when unset/unavailable."""
+async def read_app_metadata(email: str) -> dict:
+    """Return one Neural Nexus account's Auth0 ``app_metadata``, or ``{}``.
+
+    The single read the portal needs for everything the Neural Nexus API keeps
+    outside Stripe: ``pay_per_use_enabled`` and ``usage_period_anchor`` (the
+    instant that API's local usage window restarted, which the portal must
+    reproduce so its meters cover the same window enforcement counts against).
+    Fails open to an empty mapping — an Auth0 outage degrades the portal to
+    inferred values rather than breaking the dashboard.
+    """
     if not auth0_is_configured():
-        return None
+        return {}
     try:
         auth0_user = await _find_user_by_email(email)
     except Exception as lookup_error:  # noqa: BLE001 - degrade to inference
-        logger.warning("Auth0 user lookup failed for pay-per-use read: %s", lookup_error)
-        return None
+        logger.warning("Auth0 user lookup failed: %s", lookup_error)
+        return {}
     if auth0_user is None:
-        return None
-    flag_value = (auth0_user.get("app_metadata") or {}).get("pay_per_use_enabled")
+        return {}
+    return auth0_user.get("app_metadata") or {}
+
+
+async def read_pay_per_use_enabled(email: str) -> bool | None:
+    """Explicit flag from Auth0 app_metadata, or None when unset/unavailable."""
+    flag_value = (await read_app_metadata(email)).get("pay_per_use_enabled")
     if flag_value is None:
         return None
     return bool(flag_value)
+
+
+async def read_usage_period_anchor(email: str) -> str | None:
+    """The Neural Nexus API's ``usage_period_anchor`` (ISO-8601 UTC), if written.
+
+    Written by that API when a tier upgrade, first checkout, or a mid-period
+    cancellation restarts the local usage window. ``None`` means the account has
+    no personal anchor and the plain configured period applies.
+    """
+    anchor_value = (await read_app_metadata(email)).get("usage_period_anchor")
+    return anchor_value if isinstance(anchor_value, str) and anchor_value else None
 
 
 async def write_pay_per_use_enabled(email: str, enabled: bool) -> bool:

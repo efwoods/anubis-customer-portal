@@ -18,7 +18,11 @@ from settings import get_portal_settings
 from stripe_gateway import customers as stripe_customers
 from stripe_gateway import payment_methods as stripe_payment_methods
 from stripe_gateway import subscriptions as stripe_subscriptions
-from stripe_gateway.catalog import get_tier_catalog, public_tier_catalog
+from stripe_gateway.catalog import (
+    catalog_trial_tier,
+    get_tier_catalog,
+    public_tier_catalog,
+)
 
 router = APIRouter(tags=["Subscription"])
 
@@ -39,6 +43,25 @@ def _iso_from_epoch(epoch_seconds: int | None) -> str | None:
     return datetime.datetime.fromtimestamp(
         epoch_seconds, tz=datetime.timezone.utc
     ).isoformat()
+
+
+def _whole_days_remaining(epoch_seconds: int | None) -> int | None:
+    """Whole days from now until ``epoch_seconds``; ``None`` when there is no date.
+
+    Rounded UP so a trial with any time left reads as at least "1 day left"
+    rather than "0 days" — a customer told they have zero days remaining while
+    the trial is still running would reasonably conclude it had expired. A date
+    already in the past yields ``0``.
+    """
+    if not epoch_seconds:
+        return None
+    seconds_remaining = (
+        datetime.datetime.fromtimestamp(epoch_seconds, tz=datetime.timezone.utc)
+        - datetime.datetime.now(datetime.timezone.utc)
+    ).total_seconds()
+    if seconds_remaining <= 0:
+        return 0
+    return max(1, -(-int(seconds_remaining) // 86_400))
 
 
 def _resolve_return_origin(request: Request) -> str:
@@ -97,7 +120,13 @@ async def _resolve_pay_per_use_enabled(
 async def get_subscription_status(
     identity: CustomerIdentity = Depends(resolve_customer_identity),
 ) -> dict:
-    """Subscription identity, trial/cancellation state, and the tier catalog."""
+    """Subscription identity, trial/cancellation state, and the tier catalog.
+
+    The trial fields answer "is the free trial still available to me, am I on it
+    right now, and how much of it is left" — a catalog advertising "30-day free
+    trial" says nothing about whether THIS customer can still claim one, and one
+    trial is granted per Stripe customer ever.
+    """
     catalog = await get_tier_catalog()
     response: dict = {
         "kind": identity.kind,
@@ -114,6 +143,10 @@ async def get_subscription_status(
         "pending_downgrade_tier": None,
         "monthly_base_fee_usd": 0.0,
         "pay_per_use_enabled": False,
+        "trial_tier": catalog_trial_tier(catalog),
+        "trial_already_used": False,
+        "trialing": False,
+        "trial_days_remaining": None,
         "tier_catalog": public_tier_catalog(catalog),
     }
     if identity.customer_id is None:
@@ -121,6 +154,10 @@ async def get_subscription_status(
 
     subscription = await stripe_subscriptions.get_current_subscription(
         identity.customer_id
+    )
+    customer = await stripe_customers.get_customer(identity.customer_id)
+    response["trial_already_used"] = await stripe_subscriptions.customer_has_used_trial(
+        customer, identity.customer_id
     )
     if subscription is not None:
         tier = stripe_subscriptions.subscription_tier(subscription, catalog)
@@ -146,6 +183,10 @@ async def get_subscription_status(
                     )
                 ),
             }
+        )
+        response["trialing"] = subscription.get("status") == "trialing"
+        response["trial_days_remaining"] = _whole_days_remaining(
+            subscription.get("trial_end")
         )
     response["pay_per_use_enabled"] = await _resolve_pay_per_use_enabled(
         identity, response["status"]
@@ -332,5 +373,13 @@ async def set_pay_per_use(
             )
     stored_enabled = await auth0_gateway.write_pay_per_use_enabled(
         identity.email, body.enabled
+    )
+    # Auth0 is the store of record, but a write there alone can take up to five
+    # minutes to affect Neural Nexus request gating (its api-key cache). Echoing
+    # the flag into Stripe customer metadata fires customer.updated, which the
+    # Neural Nexus webhook turns into an immediate cache eviction — so the
+    # toggle takes effect as promptly as a subscription change does.
+    await stripe_customers.mirror_pay_per_use_flag_to_stripe(
+        identity.customer_id, stored_enabled
     )
     return {"pay_per_use_enabled": stored_enabled}

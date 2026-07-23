@@ -4,14 +4,23 @@
 #   Live environment:  docker compose --env-file .env.live up --build
 #
 # The portal-server container is the backend-for-frontend the Vercel client
-# calls; the cloudflared container exposes it to the public internet on the
-# hostname configured for the tunnel (checkout-api.neuralnexus.site), reaching
-# the server over the compose network at http://portal-server:8080.
+# calls. It is published on the host as ${PORT:-8200} -> container 8080.
 #
-# Both services read the same env file, selected by COMPOSE_ENV_FILE (defaults
-# to .env.dev; set to .env.live in the live env file for
-# `COMPOSE_ENV_FILE=.env.live docker compose up`). cloudflared authenticates
-# with TUNNEL_TOKEN, which it reads natively from its environment.
+# Public exposure of checkout-api.neuralnexus.site is handled by the HOST
+# cloudflared systemd service (the existing neuralnexus-api tunnel,
+# 980ecf10-3835-4226-a164-dc22d13b2dc9), whose ~/.cloudflared/config.yml carries
+# a second ingress rule: checkout-api.neuralnexus.site -> http://localhost:8200.
+# Nothing here needs to run for the tunnel to work.
+#
+# The cloudflared service below is an OPTIONAL alternative for hosts that do not
+# already run a tunnel. It only starts when explicitly selected:
+#   docker compose --profile bundled-tunnel up --build
+# and it requires TUNNEL_TOKEN (a per-tunnel connector token) in the env file
+# plus a tunnel whose public hostname points at http://portal-server:8080 (the
+# compose service name, not localhost — cloudflared runs inside this network).
+#
+# Services read the env file selected by COMPOSE_ENV_FILE (defaults to .env.dev;
+# set to .env.live for `COMPOSE_ENV_FILE=.env.live docker compose up`).
 
 services:
   portal-server:
@@ -27,7 +36,9 @@ services:
       timeout: 5s
       retries: 3
 
+  # Optional; see the header comment. Not started by a plain `docker compose up`.
   cloudflared:
+    profiles: ["bundled-tunnel"]
     image: cloudflare/cloudflared:latest
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.dev}

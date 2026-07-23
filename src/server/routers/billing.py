@@ -38,6 +38,21 @@ async def list_payment_methods(
     return {"payment_methods": payment_method_list}
 
 
+@router.post("/payment_methods/reconcile")
+async def reconcile_payment_methods(
+    identity: CustomerIdentity = Depends(require_verified_identity),
+) -> dict:
+    """Make saved cards reusable in Checkout and drop duplicate cards.
+
+    Called by the client after any flow that can attach a card — returning from
+    Stripe Checkout, or saving one through the add-card form — because Stripe
+    saves subscription cards in a state Checkout will not prefill, which is what
+    leads customers to retype a card they already have on file and end up with
+    two identical entries. Idempotent, so calling it on every such event is safe.
+    """
+    return await stripe_payment_methods.reconcile_payment_methods(identity.customer_id)
+
+
 @router.post("/payment_methods/setup_intent")
 async def create_payment_method_setup_intent(
     identity: CustomerIdentity = Depends(require_verified_identity),

@@ -48,6 +48,12 @@ class PortalSettings(BaseSettings):
 
     # Neural Nexus API (email + password auth: login / logout / signup) ------
     nn_api_base_url: str = "https://api.neuralnexus.site"
+    # Must match the Neural Nexus API's USAGE_PERIOD_DAYS. The portal reproduces
+    # that API's usage-window arithmetic so the meters shown here cover exactly
+    # the window its allotment gating counts against; a mismatch makes the
+    # portal disagree with the 402 a user hits in the chat app. Zero (the
+    # default on both sides) means calendar-month windows.
+    usage_period_days: int = 0
 
     @property
     def dev_mode_enabled(self) -> bool:

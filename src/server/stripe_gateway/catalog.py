@@ -206,6 +206,25 @@ async def get_tier_catalog(force_refresh: bool = False) -> dict:
         return catalog
 
 
+def catalog_trial_tier(catalog: dict) -> str | None:
+    """The tier whose free trial a signup grants, or ``None`` when none offers one.
+
+    Exactly one tier carries a trial in the provisioned catalog (pro), but the
+    catalog is discovered rather than hardcoded, so this picks the highest-ranked
+    tier advertising trial days instead of assuming the name. The refund flow
+    needs it to answer "which allotment is the free trial", and the client needs
+    it to say whose trial a customer is on.
+    """
+    trial_tiers = [
+        tier
+        for tier in SUBSCRIPTION_TIER_ORDER
+        if (catalog.get(tier) or {}).get("trial_period_days", 0) > 0
+    ]
+    if not trial_tiers:
+        return None
+    return max(trial_tiers, key=tier_rank)
+
+
 def catalog_prices_for_tier(catalog: dict, tier: str) -> list[str]:
     """Ordered price ids for one tier: the flat base first, then metered prices."""
     tier_entry = catalog.get(tier)

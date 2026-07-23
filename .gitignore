@@ -1,4 +1,7 @@
 .env.*
+# The production client build values are public (an API hostname, no secrets)
+# and must be committed so the Vercel git-push deploy builds against them.
+!src/client/.env.production
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
