@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "../api";
-import type { SubscriptionStatus, UsageReport } from "../types";
+import type { UsageReport } from "../types";
 import { PayPerUseToggle } from "./PayPerUseToggle";
 import { UsageMeterBar } from "./UsageMeterBar";
 
@@ -29,10 +29,15 @@ export function UsageSection({ isVerified, refreshCounter, onChanged }: UsageSec
   const [payPerUseEnabled, setPayPerUseEnabled] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // /usage reports the pay-per-use flag alongside the meters it governs, so the
+  // toggle and the bars are always read from one response — a second request to
+  // /subscription could answer differently mid-flight and show a bar labelled
+  // "billing as pay-per-use" beside a toggle switched off.
   const loadUsage = useCallback(() => {
     apiRequest<UsageReport>("/usage")
       .then((report) => {
         setUsage(report);
+        setPayPerUseEnabled(report.pay_per_use_enabled);
         setErrorMessage(null);
       })
       .catch((usageError) =>
@@ -40,12 +45,7 @@ export function UsageSection({ isVerified, refreshCounter, onChanged }: UsageSec
           usageError instanceof Error ? usageError.message : "Could not load usage.",
         ),
       );
-    if (isVerified) {
-      apiRequest<SubscriptionStatus>("/subscription")
-        .then((subscription) => setPayPerUseEnabled(subscription.pay_per_use_enabled))
-        .catch(() => undefined);
-    }
-  }, [isVerified]);
+  }, []);
 
   useEffect(() => {
     loadUsage();
@@ -96,6 +96,7 @@ export function UsageSection({ isVerified, refreshCounter, onChanged }: UsageSec
               key={meterEventName}
               meterEventName={meterEventName}
               usage={meterUsage}
+              payPerUseEnabled={usage.pay_per_use_enabled}
             />
           ))
         : null}

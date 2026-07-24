@@ -114,16 +114,31 @@ value is a public URL — via a `!src/client/.env.production` negation in
 If a `VITE_API_BASE_URL` project environment variable is ever added in the
 Vercel dashboard, it takes precedence over this file.
 
-**3b. Client domain (only remaining manual step)**
-`checkout.neuralnexus.site` does not resolve yet. Until it is configured, the
-portal is reachable at the project's `*.vercel.app` URL, which `CLIENT_ORIGIN`
-already allows. To add it:
-- Vercel → **anubis-customer-portal → Settings → Domains → Add**
-  `checkout.neuralnexus.site`.
-- Create the `CNAME` Vercel asks for in Cloudflare DNS, target `*.vercel-dns.com`,
-  **DNS-only / not proxied** (so Vercel issues TLS; mirrors the existing `www`
-  record). Do not use `cloudflared tunnel route dns` for this one — it is a
-  Vercel-hosted origin, not a tunnel origin.
+**3b. Client domain — Cloudflare redirect (same pattern as `ui`)**
+`checkout.neuralnexus.site` 302-redirects to the `anubis-customer-portal.vercel.app`
+production alias — identical mechanism to `ui.neuralnexus.site` (which redirects
+to its Streamlit app). The branded URL is only the entry point; after the bounce
+the address bar shows the `.vercel.app` URL. The domain is **not** added to the
+Vercel project. All steps are in the Cloudflare dashboard (`neuralnexus.site`
+zone); there is no Cloudflare API token on the host and `cloudflared` cannot
+create these, so this is manual.
+
+- **DNS → Records → Add record:** `A` `checkout` → `192.0.2.1` (dummy, same as
+  the `ui` record), **Proxied (orange cloud)**. Redirect Rules only run on
+  proxied traffic. This is separate from the `checkout-api` tunnel record.
+- **Rules → Redirect Rules → Create rule** (Single Redirect, `checkout → Vercel portal`):
+  - When `Hostname` `equals` `checkout.neuralnexus.site`.
+  - URL redirect, **Dynamic**:
+    - Expression: `concat("https://anubis-customer-portal.vercel.app", http.request.uri.path)`
+    - Status code **302 (Temporary)** — a 301 gets hard-cached by browsers and
+      would fight a later switch to a true proxy.
+    - Preserve query string: **On**.
+  - (Static alternative, matching `ui` exactly: redirect to
+    `https://anubis-customer-portal.vercel.app/` with no path preservation.)
+  - Deploy.
+
+After the redirect the effective origin is `anubis-customer-portal.vercel.app`,
+which `CLIENT_ORIGIN` already allows, so no code change is needed.
 
 **3c. Deploy**
 Push to `main`. A rebuild is what picks up `.env.production`, so any change to

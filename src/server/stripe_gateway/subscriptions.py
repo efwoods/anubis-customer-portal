@@ -105,6 +105,34 @@ async def customer_has_used_trial(customer: dict, customer_id: str) -> bool:
     return await asyncio.to_thread(_any_prior_trial)
 
 
+async def has_used_trial(customer_id: str) -> bool:
+    """Whether this customer has already consumed their one free trial, ever.
+
+    A trial is granted once per Stripe customer and that record survives account
+    deletion, so a catalog advertising "30-day free trial" can be true of the
+    product while being false for the customer reading it. The check is
+    authoritative-first (the ``neural_nexus_trial_used`` flag the Neural Nexus
+    API stamps at trial creation) and falls back to subscription history.
+
+    Fails CLOSED to ``True``: when Stripe cannot be read, claiming the trial is
+    still available would promise something checkout may then refuse, which is
+    the worse of the two wrong answers.
+    """
+    try:
+        customer = await asyncio.to_thread(
+            lambda: stripe.Customer.retrieve(customer_id).to_dict()
+        )
+        return await customer_has_used_trial(customer, customer_id)
+    except Exception as trial_lookup_error:  # noqa: BLE001 - fail closed
+        logger.warning(
+            "Could not determine trial history for customer %s; reporting the "
+            "trial as already used: %s",
+            customer_id,
+            trial_lookup_error,
+        )
+        return True
+
+
 async def create_checkout_session(
     customer_id: str,
     tier: str,

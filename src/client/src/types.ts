@@ -42,6 +42,13 @@ export interface SubscriptionStatus {
   pending_downgrade_tier: string | null;
   monthly_base_fee_usd: number;
   pay_per_use_enabled: boolean;
+  /** Which tier's free trial a signup grants (null when none is offered). */
+  trial_tier: string | null;
+  /** One trial per Stripe customer ever — true once this customer has used it. */
+  trial_already_used: boolean;
+  trialing: boolean;
+  /** Whole days left in the running trial; null when not trialing. */
+  trial_days_remaining: number | null;
   tier_catalog: TierCatalogEntry[];
 }
 
@@ -49,6 +56,8 @@ export interface MeterUsage {
   monthly_allotment: number;
   used_to_date: number;
   remaining: number;
+  /** Usage past the included allotment — billable when pay-per-use is on. */
+  over_allotment: number;
   overage_price_per_million: number | null;
   overage_price_per_unit_usd: number | null;
   unit: "tokens" | "units";
@@ -58,9 +67,18 @@ export interface UsageReport {
   tier: string;
   status: string | null;
   trialing: boolean;
+  pay_per_use_enabled: boolean;
   usage_period_start: string;
   usage_period_end: string;
   meters: Record<string, MeterUsage>;
+}
+
+export interface RefundResult {
+  refund_id: string;
+  status: string;
+  subscription_action: string;
+  subscription_tier?: string | null;
+  message: string;
 }
 
 export interface InvoiceSummary {

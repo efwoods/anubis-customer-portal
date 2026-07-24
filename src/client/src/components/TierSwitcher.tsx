@@ -41,6 +41,40 @@ function formatDate(isoDate: string | null): string {
   });
 }
 
+/** Describes this customer's standing with the tier's free trial, or "" when none. */
+function trialStatusText(
+  subscription: SubscriptionStatus,
+  tier: string,
+  trialPeriodDays: number,
+): string {
+  if (trialPeriodDays <= 0) {
+    return "";
+  }
+  // The trial belongs to whichever tier grants it, so a customer trialing on an
+  // upgraded tier still sees the status on the tier that gave it to them.
+  const isTrialTier = subscription.trial_tier === tier;
+  if (subscription.trialing && isTrialTier) {
+    const daysRemaining = subscription.trial_days_remaining;
+    if (daysRemaining === null) {
+      return "Free trial running";
+    }
+    return daysRemaining <= 0
+      ? "Free trial ended"
+      : `Free trial: ${daysRemaining} day${daysRemaining === 1 ? "" : "s"} left`;
+  }
+  if (subscription.trial_already_used) {
+    return "Free trial already used";
+  }
+  return `${trialPeriodDays}-day free trial available`;
+}
+
+function trialBadgeClass(subscription: SubscriptionStatus, tier: string): string {
+  if (subscription.trialing && subscription.trial_tier === tier) {
+    return "badge badge-success";
+  }
+  return subscription.trial_already_used ? "badge badge-muted" : "badge badge-info";
+}
+
 function buttonLabel(
   mode: "switch" | "signup",
   tier: string,
@@ -48,12 +82,13 @@ function buttonLabel(
   hasPendingChange: boolean,
   isPendingTarget: boolean,
   trialPeriodDays: number,
+  trialAlreadyUsed: boolean,
 ): string {
   if (mode === "signup") {
     if (isCurrent) {
       return "Current plan";
     }
-    if (tier === "pro" && trialPeriodDays > 0) {
+    if (tier === "pro" && trialPeriodDays > 0 && !trialAlreadyUsed) {
       return "Sign up for free Pro trial";
     }
     return "Sign in to subscribe";
@@ -106,12 +141,19 @@ export function TierSwitcher({
             hasPendingChange,
             isPendingTarget,
             tierEntry.trial_period_days,
+            subscription.trial_already_used,
           );
           const isProTrialCta =
             mode === "signup" &&
             tierEntry.tier === "pro" &&
             tierEntry.trial_period_days > 0 &&
+            !subscription.trial_already_used &&
             !isCurrent;
+          const trialText = trialStatusText(
+            subscription,
+            tierEntry.tier,
+            tierEntry.trial_period_days,
+          );
           const disabled =
             busy ||
             (mode === "switch" && isCurrent && !hasPendingChange) ||
@@ -143,9 +185,9 @@ export function TierSwitcher({
                   ? `$${tierEntry.monthly_base_fee_usd.toFixed(2)}/month`
                   : "$0/month"}
               </p>
-              {tierEntry.trial_period_days > 0 ? (
-                <p className="badge badge-info">
-                  {tierEntry.trial_period_days}-day free trial
+              {trialText ? (
+                <p className={trialBadgeClass(subscription, tierEntry.tier)}>
+                  {trialText}
                 </p>
               ) : null}
               <ul className="tier-meter-list">

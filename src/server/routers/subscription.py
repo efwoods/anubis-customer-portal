@@ -155,9 +155,8 @@ async def get_subscription_status(
     subscription = await stripe_subscriptions.get_current_subscription(
         identity.customer_id
     )
-    customer = await stripe_customers.get_customer(identity.customer_id)
-    response["trial_already_used"] = await stripe_subscriptions.customer_has_used_trial(
-        customer, identity.customer_id
+    response["trial_already_used"] = await stripe_subscriptions.has_used_trial(
+        identity.customer_id
     )
     if subscription is not None:
         tier = stripe_subscriptions.subscription_tier(subscription, catalog)

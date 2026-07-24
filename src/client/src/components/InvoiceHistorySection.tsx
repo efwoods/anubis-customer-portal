@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../api";
-import type { InvoiceSummary } from "../types";
+import type { InvoiceSummary, RefundResult } from "../types";
 
 function formatAmount(amountInMinorUnits: number, currency: string): string {
   return new Intl.NumberFormat(undefined, {
@@ -17,7 +17,14 @@ function formatDate(epochSeconds: number): string {
   });
 }
 
-export function InvoiceHistorySection({ refreshCounter }: { refreshCounter: number }) {
+export function InvoiceHistorySection({
+  refreshCounter,
+  onChanged,
+}: {
+  refreshCounter: number;
+  /** A refund also changes the subscription, so the whole dashboard re-syncs. */
+  onChanged: () => void;
+}) {
   const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
   const [busyInvoiceId, setBusyInvoiceId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -37,7 +44,9 @@ export function InvoiceHistorySection({ refreshCounter }: { refreshCounter: numb
   const refundInvoice = async (invoiceId: string) => {
     if (
       !window.confirm(
-        "Issue a full refund for this invoice? The refund is immediate and cannot be undone.",
+        "Issue a full refund for this invoice? Refunding also ends the plan it " +
+          "paid for: a paid plan drops to the free tier immediately, and a free " +
+          "trial runs to the end of the current period. This cannot be undone.",
       )
     ) {
       return;
@@ -46,12 +55,17 @@ export function InvoiceHistorySection({ refreshCounter }: { refreshCounter: numb
     setMessage(null);
     setErrorMessage(null);
     try {
-      const refund = await apiRequest<{ refund_id: string; status: string }>(
+      const refund = await apiRequest<RefundResult>(
         `/invoices/${invoiceId}/refund`,
         { method: "POST" },
       );
-      setMessage(`Refund ${refund.refund_id} is ${refund.status}.`);
+      // The server's message already spells out what happened to the plan
+      // (immediate free tier vs trial retained to period end), so surface it
+      // verbatim rather than restating just the refund id.
+      setMessage(refund.message);
       setLocalRefreshCounter((previous) => previous + 1);
+      // The subscription changed too — re-sync the subscription and usage cards.
+      onChanged();
     } catch (refundError) {
       setErrorMessage(
         refundError instanceof Error ? refundError.message : "The refund failed.",

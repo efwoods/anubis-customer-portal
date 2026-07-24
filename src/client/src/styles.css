@@ -171,6 +171,11 @@ body {
   color: var(--color-warning);
 }
 
+.badge-muted {
+  background: var(--color-border);
+  color: var(--color-muted);
+}
+
 button,
 .primary-button,
 .secondary-button,

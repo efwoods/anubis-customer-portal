@@ -74,10 +74,22 @@ export default function App() {
 
   useEffect(() => {
     const checkoutResult = new URLSearchParams(window.location.search).get("checkout");
-    if (checkoutResult) {
-      window.history.replaceState(null, "", window.location.pathname);
+    if (!checkoutResult) {
+      return;
     }
-  }, []);
+    window.history.replaceState(null, "", window.location.pathname);
+    if (checkoutResult !== "success") {
+      return;
+    }
+    // Checkout attaches the card it charged with allow_redisplay "limited",
+    // which Checkout itself will not prefill next time — and if the customer
+    // retyped a card they already had, Stripe just created a second copy of it.
+    // Reconciling here makes the card reusable and collapses the duplicate, so
+    // the wallet the customer returns to is the one they expect.
+    void apiRequest<unknown>("/payment_methods/reconcile", { method: "POST" })
+      .catch(() => undefined)
+      .finally(() => refreshDashboard());
+  }, [refreshDashboard]);
 
   const handleSignOut = async () => {
     // Revoke the Neural Nexus session (best-effort); always clear locally so
@@ -211,7 +223,10 @@ export default function App() {
             publishableKey={configuration.publishable_key}
             refreshCounter={refreshCounter}
           />
-          <InvoiceHistorySection refreshCounter={refreshCounter} />
+          <InvoiceHistorySection
+            refreshCounter={refreshCounter}
+            onChanged={refreshDashboard}
+          />
         </>
       ) : null}
 

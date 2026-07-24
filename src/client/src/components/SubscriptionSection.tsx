@@ -127,6 +127,16 @@ export function SubscriptionSection({
     (entry) => entry.tier === subscription.tier,
   );
   const isTrialing = subscription.status === "trialing";
+  const daysRemaining = subscription.trial_days_remaining;
+  // "Free trial" alone never told the customer whether theirs was still running
+  // or how much was left, which is exactly what they need to decide about a
+  // plan. Lead with the countdown and fall back to the end date.
+  const trialCountdownText =
+    daysRemaining !== null && daysRemaining > 0
+      ? `Free trial: ${daysRemaining} day${daysRemaining === 1 ? "" : "s"} left`
+      : daysRemaining === 0
+        ? "Free trial ended"
+        : `Free trial ends ${formatDate(subscription.trial_end)}`;
   const cancelDate = subscription.cancel_at || subscription.current_period_end;
   const pendingDowngradeEntry = subscription.pending_downgrade_tier
     ? subscription.tier_catalog.find(
@@ -150,9 +160,7 @@ export function SubscriptionSection({
             Switches to {pendingDowngradeName} {formatDate(subscription.current_period_end)}
           </span>
         ) : isTrialing ? (
-          <span className="badge badge-info">
-            Free trial ends {formatDate(subscription.trial_end)}
-          </span>
+          <span className="badge badge-info">{trialCountdownText}</span>
         ) : subscription.status ? (
           <span className="badge badge-success">{subscription.status}</span>
         ) : (
@@ -174,10 +182,18 @@ export function SubscriptionSection({
       {isTrialing ? (
         <p>
           Your free trial includes the full pro-tier monthly allotment of messaging
-          and document-upload tokens at no charge. After the trial ends on{" "}
-          {formatDate(subscription.trial_end)}, the service continues automatically
-          when a payment method is on file — otherwise the account drops to the free
-          tier.
+          and document-upload tokens at no charge, and{" "}
+          {daysRemaining !== null && daysRemaining > 0
+            ? `${daysRemaining} day${daysRemaining === 1 ? "" : "s"} of it remain`
+            : "it has now run out"}
+          . After the trial ends on {formatDate(subscription.trial_end)}, the
+          service continues automatically when a payment method is on file —
+          otherwise the account drops to the free tier.
+        </p>
+      ) : !subscription.trial_already_used && subscription.trial_tier ? (
+        <p className="muted">
+          Your free trial has not been used yet — it is included with the{" "}
+          {subscription.trial_tier} tier below.
         </p>
       ) : null}
 

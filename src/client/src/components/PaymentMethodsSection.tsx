@@ -225,7 +225,17 @@ export function PaymentMethodsSection({
             billingDefaults={billingDefaults}
             onSaved={() => {
               setSetupClientSecret(null);
-              onChanged();
+              // A card saved through a SetupIntent is attached with
+              // allow_redisplay "unspecified", which Checkout refuses to
+              // prefill — so the next tier change would show an empty card
+              // form and invite a duplicate. Reconciling marks it reusable
+              // (and removes any duplicate already created) before the list
+              // refreshes.
+              void apiRequest<unknown>("/payment_methods/reconcile", {
+                method: "POST",
+              })
+                .catch(() => undefined)
+                .finally(() => onChanged());
             }}
             onCancel={() => setSetupClientSecret(null)}
           />

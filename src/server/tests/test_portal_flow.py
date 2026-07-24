@@ -263,6 +263,11 @@ def test_subscription_status_shape(client, monkeypatch):
         stripe_subscriptions, "get_current_subscription", fake_get_current_subscription
     )
 
+    async def fake_has_used_trial(customer_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(stripe_subscriptions, "has_used_trial", fake_has_used_trial)
+
     subscription_response = client.get(
         "/subscription", headers={"Authorization": f"Bearer {token}"}
     )
@@ -275,6 +280,12 @@ def test_subscription_status_shape(client, monkeypatch):
     assert body["cancel_at_period_end"] is False
     # Trialing does not infer pay-per-use (matches the Neural Nexus API).
     assert body["pay_per_use_enabled"] is False
+    # Trial visibility: the customer is on the pro trial, has not used it up,
+    # and the countdown reflects the ~20 days left in the sample subscription.
+    assert body["trial_tier"] == "pro"
+    assert body["trialing"] is True
+    assert body["trial_already_used"] is False
+    assert body["trial_days_remaining"] == 20
     catalog_tiers = {entry["tier"] for entry in body["tier_catalog"]}
     assert catalog_tiers == {"free", "pro"}
 
@@ -303,11 +314,15 @@ def test_usage_report_shape(client, monkeypatch):
     body = usage_response.json()
     assert body["tier"] == "pro"
     assert body["trialing"] is True
+    # /usage carries the pay-per-use flag so the client renders the meters and
+    # the toggle from one consistent response.
+    assert body["pay_per_use_enabled"] is False
 
     messaging = body["meters"]["messaging_tokens"]
     assert messaging["monthly_allotment"] == 5_000_000
     assert messaging["used_to_date"] == 6_000_000
     assert messaging["remaining"] == 0  # clamped, over allotment
+    assert messaging["over_allotment"] == 1_000_000  # surfaced for pay-per-use
     assert messaging["overage_price_per_million"] == 1.5
 
     documents = body["meters"]["document_upload_tokens"]
@@ -362,3 +377,105 @@ def test_verified_only_endpoints_reject_anonymous(client, monkeypatch):
 
     pay_per_use_response = client.post("/pay_per_use", json={"enabled": True})
     assert pay_per_use_response.status_code == 401
+
+
+def _mock_refund_success(monkeypatch) -> None:
+    from stripe_gateway import invoices as stripe_invoices
+
+    async def fake_refund_invoice(customer_id: str, invoice_id: str) -> dict:
+        return {
+            "refund_id": "re_test",
+            "status": "succeeded",
+            "amount": 2000,
+            "currency": "usd",
+            "invoice_id": invoice_id,
+        }
+
+    monkeypatch.setattr(stripe_invoices, "refund_invoice", fake_refund_invoice)
+
+
+def test_refund_of_paid_subscription_cancels_immediately(client, monkeypatch):
+    """A paid (non-trial) refund ends the subscription at once, dropping to free."""
+    token = _sign_in(client, monkeypatch)
+    _mock_refund_success(monkeypatch)
+
+    paid_subscription = {
+        **SAMPLE_PRO_TRIAL_SUBSCRIPTION,
+        "status": "active",
+        "metadata": {"neural_nexus_tier": "pro"},
+    }
+
+    async def fake_get_current_subscription(customer_id: str) -> dict | None:
+        return paid_subscription
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "get_current_subscription", fake_get_current_subscription
+    )
+
+    canceled: dict[str, str] = {}
+
+    async def fake_release_pending_schedule(subscription: dict) -> None:
+        return None
+
+    async def fake_cancel_immediately(subscription_id: str) -> dict:
+        canceled["subscription_id"] = subscription_id
+        return {"id": subscription_id, "status": "canceled"}
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "release_pending_schedule", fake_release_pending_schedule
+    )
+    monkeypatch.setattr(
+        stripe_subscriptions, "cancel_subscription_immediately", fake_cancel_immediately
+    )
+
+    response = client.post(
+        "/invoices/in_test/refund", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["refund_id"] == "re_test"
+    assert body["subscription_action"] == "canceled_immediately"
+    assert canceled["subscription_id"] == "sub_test_pro"
+
+
+def test_refund_during_pro_trial_retains_trial_to_period_end(client, monkeypatch):
+    """A refund while trialing on the trial tier keeps the trial to the boundary."""
+    token = _sign_in(client, monkeypatch)
+    _mock_refund_success(monkeypatch)
+
+    async def fake_get_current_subscription(customer_id: str) -> dict | None:
+        return SAMPLE_PRO_TRIAL_SUBSCRIPTION  # status "trialing", tier pro
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "get_current_subscription", fake_get_current_subscription
+    )
+
+    scheduled: dict[str, bool] = {}
+
+    async def fake_release_pending_schedule(subscription: dict) -> None:
+        return None
+
+    async def fake_set_cancel_at_period_end(subscription_id: str, cancel: bool) -> dict:
+        scheduled["cancel"] = cancel
+        return {"id": subscription_id, "cancel_at_period_end": cancel}
+
+    def _fail_immediate(*args, **kwargs):  # pragma: no cover - must not be called
+        raise AssertionError("a trial refund must not cancel immediately")
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "release_pending_schedule", fake_release_pending_schedule
+    )
+    monkeypatch.setattr(
+        stripe_subscriptions, "set_cancel_at_period_end", fake_set_cancel_at_period_end
+    )
+    monkeypatch.setattr(
+        stripe_subscriptions, "cancel_subscription_immediately", _fail_immediate
+    )
+
+    response = client.post(
+        "/invoices/in_test/refund", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["subscription_action"] == "ends_at_period_end"
+    assert scheduled["cancel"] is True
