@@ -23,12 +23,12 @@
 # set to .env.live for `COMPOSE_ENV_FILE=.env.live docker compose up`).
 
 services:
-  portal-server:
+  portal-server-dev:
     build: .
     env_file:
-      - ${COMPOSE_ENV_FILE:-.env}
+      - ${COMPOSE_ENV_FILE:-.env.dev}
     ports:
-      - "${PORT:-8200}:8080"
+      - "${PORT:-8202}:8080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
@@ -37,12 +37,12 @@ services:
       retries: 3
 
   # Optional; see the header comment. Not started by a plain `docker compose up`.
-  cloudflared:
-    profiles: ["bundled-tunnel"]
-    image: cloudflare/cloudflared:latest
-    env_file:
-      - ${COMPOSE_ENV_FILE:-.env}
-    command: tunnel --no-autoupdate run
-    restart: unless-stopped
-    depends_on:
-      - portal-server
+  # cloudflared:
+  #   profiles: ["bundled-tunnel"]
+  #   image: cloudflare/cloudflared:latest
+  #   env_file:
+  #     - ${COMPOSE_ENV_FILE:-.env.dev}
+  #   command: tunnel --no-autoupdate run
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - portal-server
