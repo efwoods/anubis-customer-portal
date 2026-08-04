@@ -1,3 +1,17 @@
+# CURRENT BUG
+anonymous usage is not reported in the customer portal
+the customer portal needs to be deployed to production and run locally
+
+
+production: https://anubis-customer-portal.vercel.app/
+
+
+
+
+
+
+
+
 # Bug: Payment method is not loaded when selecting another tier from free with a payment method on file
 Back
 Afterlife Systems Inc
@@ -124,3 +138,4 @@ Refund re_3TwD3iLimk9GVblr2Kg6dWUM is succeeded.
 30-day free trial
 
 # Bug Pay-Per-Use needs to be as immediate as changing the subscription status 
+

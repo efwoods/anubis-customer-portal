@@ -1,0 +1,8 @@
+# The Dockerfile does `COPY . .`, so without this the host node_modules would
+# clobber the image's own `npm install` layer and every env file would be baked
+# into the image. Environment values reach the dev container through the compose
+# `env_file:` directive instead.
+node_modules
+dist
+.env
+.env.*

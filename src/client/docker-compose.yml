@@ -2,13 +2,19 @@
 #
 #   docker compose up --build
 #
-# Set VITE_API_BASE_URL in .env (see .env.example).
+# Reads .env.development, which points at the TEST portal server on host port
+# 8202 (docker-compose.dev.yml, project portal-test). That filename is the one
+# Vite itself loads for mode `development`, so `npm run dev` on the host and
+# this container resolve the same VITE_API_BASE_URL.
+#
+# The production client needs nothing from here: Vercel builds in production
+# mode, where Vite loads .env.production (the Cloudflare tunnel hostname).
 
 services:
   portal-client:
     build: .
     env_file:
-      - .env.dev
+      - .env.development
     # 5173 is reserved for another app; Vite and host publish both use 5171.
     ports:
       - "5171:5171"

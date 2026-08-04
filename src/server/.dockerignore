@@ -2,5 +2,10 @@
 __pycache__
 *.pyc
 .pytest_cache
+# Every env file, not just the live one. Environment variables reach the
+# container through the compose `env_file:` directive, never through the image,
+# so nothing needs an env file baked in — and .env.dev previously was, carrying
+# the Auth0 machine-to-machine secret and the session signing secret into every
+# image layer.
 .env
-.env.live
+.env.*

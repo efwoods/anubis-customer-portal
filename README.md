@@ -2,74 +2,95 @@
 
 Customer portal for Neural Nexus: a React client (Vercel) plus a Python
 FastAPI backend-for-frontend (local Docker + Cloudflare Tunnel) that adds
-usage-vs-allotment bars, tier switching, a pay-per-use toggle, refunds, and
-email one-time-passcode login on top of the standard Stripe billing-portal
-features. Full specification: [_FEATURE.md](_FEATURE.md).
+usage-vs-allotment bars, tier switching, a pay-per-use toggle, and refunds on
+top of the standard Stripe billing-portal features. Verified users sign in with
+their Neural Nexus email and password; anonymous visitors are identified by a
+hashed client ip. Full specification: [_FEATURE.md](_FEATURE.md).
+
+## The two stacks
+
+The Stripe live environment and the Stripe test environment are two separate,
+simultaneously running stacks — one compose file and one env file each, both env
+files gitignored:
+
+| Stack | Compose file | Env file | Project | Host port | Stripe | Reached by |
+|---|---|---|---|---|---|---|
+| live | `docker-compose.yml` | `.env` | `portal-live` | 8200 | `sk_live_` | Cloudflare tunnel → Vercel client |
+| test | `docker-compose.dev.yml` | `.env.dev` | `portal-test` | 8202 | `sk_test_` | `http://localhost:5171` only |
+
+Only the live stack is publicly reachable: the host's `cloudflared` systemd
+service routes `checkout-api.neuralnexus.site` to host port 8200, and the Vercel
+client is built against that hostname. The client renders a TEST MODE banner
+whenever the server it talks to reports `PORTAL_ENV=test`.
+
+Both compose files name their published port and env file **literally**. They
+share a directory, so `docker compose` auto-loads `./.env` — the live file — as
+the interpolation source for both; literal values are what stop the test stack
+from being steered by live values.
 
 ## Prerequisites
 
-1. **Stripe billing objects provisioned** — run the f-metering repository's
-   `scripts/provision_stripe_billing.py` against the target Stripe environment
-   (test and/or live). The portal discovers tiers/allotments/overage rates from
-   those products and prices.
+1. **Stripe billing objects provisioned** — run the Neural Nexus API
+   repository's `scripts/provision_stripe_billing.py` against the target Stripe
+   environment (test with a `sk_test_` key, live with `--allow-live`). The
+   portal discovers tiers, allotments, and overage rates from the resulting
+   product/price metadata. The script is idempotent; re-running it changes
+   nothing that already exists.
 2. **Auth0 machine-to-machine application** authorized for the Management API
    (scopes: `read:users`, `update:users`) — used only to read/write
    `app_metadata.pay_per_use_enabled`.
-3. **Cloudflare Tunnel token** for the hostname the client will call
-   (e.g. `checkout-api.neuralnexus.site` → `portal-server:8080`).
-4. **SMTP credentials** for the one-time-passcode email (skippable in
-   development: `DEV=TRUE` logs the code instead).
+3. **A public hostname for the live server**, either the host's existing
+   Cloudflare tunnel (an ingress rule to `http://localhost:8200`) or a
+   `TUNNEL_TOKEN` for the optional bundled `cloudflared` compose service.
 
-## Run the server (test environment)
+## Run the server
 
 ```bash
 cd src/server
-cp .env.example .env          # fill in values; PORTAL_ENV=test, sk_test_... keys
-docker compose up --build
+cp .env.example .env.dev                       # test:  PORTAL_ENV=test, sk_test_…
+docker compose -f docker-compose.dev.yml up --build -d    # → :8202
+
+cp .env.example .env                           # live:  PORTAL_ENV=live, sk_live_…
+docker compose -f docker-compose.yml up --build -d        # → :8200
 ```
 
-- Health check: `http://localhost:8080/healthz`
-- Scalar API reference: `http://localhost:8080/reference`
+- Health check: `http://localhost:8202/healthz` — reports which environment it is
+- Scalar API reference: `http://localhost:8202/reference` (Swagger at `/docs`)
 
-Local development without Docker:
+Local development without Docker runs against the **test** environment: the
+settings loader names `.env.dev` as its dotenv file precisely so a bare host run
+cannot bill real customers.
 
 ```bash
 cd src/server
 uv sync
-.venv/bin/uvicorn main:app --reload --port 8080
+.venv/bin/uvicorn main:app --reload --port 8202
 ```
-
-## Run the server (live environment)
-
-```bash
-cd src/server
-cp .env.example .env.live     # PORTAL_ENV=live, sk_live_... keys,
-                              # and set COMPOSE_ENV_FILE=.env.live
-docker compose --env-file .env.live up --build
-```
-
-`.env.live` is gitignored. The client shows a TEST MODE banner whenever the
-server reports `PORTAL_ENV=test`.
 
 ## Run the client locally
 
 ```bash
 cd src/client
-cp .env.example .env          # VITE_API_BASE_URL=http://localhost:8080
 npm install
-npm run dev                   # http://localhost:5173
-# or: docker compose up --build
+npm run dev                   # http://localhost:5173, reads .env.development
+# or: docker compose up --build   # http://localhost:5171, same env file
 ```
+
+`.env.development` points at the test server on `:8202`. Never point local
+development at `:8200` — that is the live stack and bills real customers.
 
 ## Deploy the client to Vercel
 
-1. Create a Vercel project with the **root directory** set to `src/client`
-   (framework preset: Vite; `vercel.json` supplies the SPA rewrite).
-2. Set the environment variable `VITE_API_BASE_URL` to the tunnel hostname
-   (e.g. `https://checkout-api.neuralnexus.site`).
-3. Point the `checkout.neuralnexus.site` domain at the project.
-4. Add the deployed origin to the server's `CLIENT_ORIGIN` (comma-separated
-   allowlist) and restart the server.
+Deploys are triggered by a push to `main`. The Vercel project's **root
+directory** is `src/client` (framework preset: Vite; `vercel.json` supplies the
+SPA rewrite). `src/client/.env.production` is committed on purpose and holds
+`VITE_API_BASE_URL=https://checkout-api.neuralnexus.site`, which Vite inlines
+during the production build — so no Vercel dashboard environment variable is
+required. A change to that file needs a fresh deploy, not a promote of an older
+build.
+
+Switching the live server between environments needs **no client redeploy**: the
+banner and the Stripe publishable key both come from `GET /config` at runtime.
 
 ## Testing
 
@@ -86,19 +107,20 @@ STRIPE_SECRET_KEY=sk_test_... .venv/bin/python scripts/stripe_test_mode_smoke.py
 - Anonymous visitors are identified by the sha256 hash of their client ip and
   matched to the Stripe customer the Neural Nexus API creates for anonymous
   metering (`metadata.anonymous_hashed_ip`); they get a read-only free-tier
-  dashboard and a signup call-to-action.
+  dashboard and a signup call-to-action. `DEV=TRUE` pins that ip to the Neural
+  Nexus API's development value and must stay `FALSE` in the live environment,
+  or every anonymous visitor collapses onto one Stripe customer.
+- `USAGE_PERIOD_DAYS` must match the Neural Nexus API environment the portal
+  reports on — 30 in production, 0 (calendar month) in development — or the
+  portal's usage bars disagree with the 402 a user hits in the chat app.
 - The Neural Nexus API caches api-key → user lookups for five minutes, so a
   pay-per-use toggle can take up to five minutes to affect request gating there.
-- The Neural Nexus API repository needs no changes: its Stripe webhook keeps
-  Auth0 subscription state in sync with everything this portal does in Stripe.
+- The Neural Nexus API needs no code changes: its Stripe webhook keeps Auth0
+  subscription state in sync with everything this portal does in Stripe. It does
+  need a correctly registered webhook endpoint and `STRIPE_WEBHOOK_SECRET` in
+  each Stripe environment — without them, a downgrade to free cancels the paid
+  subscription and no replacement free-tier subscription is ever created.
 - The Stripe meter-usage analytics preview API is not enabled on the current
   Stripe account, so the portal's GA event-summaries fallback is the effective
   usage source. The server handles this automatically (the preview endpoint's
   404 is remembered for an hour); no configuration is needed.
-- **Pre-launch checklist for live mode**: the live Stripe environment was
-  verified UNPROVISIONED as of 2026-07-16 (its products carry none of the
-  `neural_nexus_*` metadata). Run the f-metering
-  `scripts/provision_stripe_billing.py` script against the live account before
-  `docker compose --env-file .env.live up`; until then, subscription checkout
-  and tier changes return HTTP 503 with an explanatory message (the server
-  also logs a warning at startup when the catalog is empty).

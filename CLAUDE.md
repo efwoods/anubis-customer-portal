@@ -8,32 +8,40 @@ Customer portal for Neural Nexus: a React client (deployed to Vercel) plus a
 Python FastAPI backend-for-frontend (run locally in Docker, exposed via
 Cloudflare Tunnel) that replicates the Stripe-hosted billing portal and adds
 what it cannot provide — token-usage-vs-allotment bars, tier switching with
-metered prices, a pay-per-use toggle, self-service refunds, and email
-one-time-passcode login — for both verified and anonymous users, in Stripe
-test and live environments. Full spec: [_FEATURE.md](_FEATURE.md).
+metered prices, a pay-per-use toggle, and self-service refunds — for both
+verified and anonymous users, in Stripe test and live environments. Full spec:
+[_FEATURE.md](_FEATURE.md).
 
 This portal is a satellite of the main Neural Nexus API (Anubis / f-metering
 repo, developed separately): it mutates subscriptions **directly in Stripe**
 and the existing Neural Nexus webhook (`/stripe/webhook`, unchanged) propagates
 those changes into Auth0, so the two systems never disagree. The Neural Nexus
-API needs zero changes to support this portal.
+API needs zero *code* changes to support this portal — but that webhook is load
+bearing, and it is configuration, not code. Each Stripe environment needs an
+endpoint registered at `https://api.neuralnexus.site/stripe/webhook` and its
+signing secret in the API's `STRIPE_WEBHOOK_SECRET` (the endpoint returns 503
+without one). Where it is missing, a downgrade to free cancels the paid
+subscription and the replacement $0 free-tier subscription is never created.
 
 ## Commands
 
 ```bash
-# Server — local dev without Docker
+# Server — Docker, TEST environment (reads .env.dev, project portal-test, :8202)
+cd src/server && cp .env.example .env.dev   # PORTAL_ENV=test, sk_test_...
+docker compose -f docker-compose.dev.yml up --build -d
+
+# Server — Docker, LIVE environment (reads .env, project portal-live, :8200)
+cd src/server && cp .env.example .env       # PORTAL_ENV=live, sk_live_...
+docker compose -f docker-compose.yml up --build -d
+# Health check: http://localhost:8200/healthz  — reports which environment it is
+# Scalar API reference: http://localhost:8202/reference (Swagger at /docs)
+
+# Server — local dev without Docker. Runs against the TEST environment: the
+# settings loader names .env.dev as its dotenv file so a bare host run cannot
+# bill real customers.
 cd src/server
 uv sync
-.venv/bin/uvicorn main:app --reload --port 8080
-# Health check: http://localhost:8080/healthz
-# Scalar API reference: http://localhost:8080/reference (Swagger at /docs)
-
-# Server — Docker (test environment, reads .env)
-cd src/server && cp .env.example .env   # fill in values; PORTAL_ENV=test, sk_test_...
-docker compose up --build
-
-# Server — Docker (live environment, reads .env.live, gitignored)
-docker compose --env-file .env.live up --build
+.venv/bin/uvicorn main:app --reload --port 8202
 
 # Server tests (Stripe/Auth0 mocked)
 cd src/server
@@ -43,12 +51,11 @@ cd src/server
 # Manual smoke test against the real Stripe TEST account (refuses live keys)
 STRIPE_SECRET_KEY=sk_test_... .venv/bin/python scripts/stripe_test_mode_smoke.py
 
-# Client — local dev
+# Client — local dev (reads .env.development → the test server on :8202)
 cd src/client
-cp .env.example .env   # VITE_API_BASE_URL=http://localhost:8080
 npm install
 npm run dev            # http://localhost:5173
-npm run build           # tsc -b && vite build
+npm run build          # tsc -b && vite build
 ```
 
 There is no lint/format tooling configured in this repo (no ruff/mypy/Makefile
@@ -81,9 +88,10 @@ Two identity kinds, resolved per-request by `resolve_customer_identity` (a
 FastAPI dependency used by nearly every route):
 
 - **verified** — a bearer session token (HS256 JWT, `security/session.py`)
-  minted after email one-time-passcode verification (`routers/auth.py` +
-  `security/one_time_passcode.py`). Carries the Stripe customer id and email.
-  Routes requiring this use `require_verified_identity`.
+  minted after email + password authentication proxied to the Neural Nexus API
+  (`routers/auth.py` + `neural_nexus_gateway.py`). Carries the Stripe customer
+  id, email, and the Neural Nexus refresh token used for sign-out. Routes
+  requiring this use `require_verified_identity`.
 - **anonymous** — no valid bearer token. The client ip (`x-forwarded-for`) is
   sha256-hashed with the *exact same scheme the Neural Nexus API uses* and
   matched against a Stripe customer carrying `metadata.anonymous_hashed_ip`
@@ -93,9 +101,11 @@ FastAPI dependency used by nearly every route):
   so a local portal against the same Stripe test account resolves the same
   anonymous customer.
 
-One-time passcodes are process-local (in-memory dict on `app.state`, sha256
-hashed, TTL + bounded attempts) — no external store, since the portal server
-is a single container; a restart just invalidates outstanding codes.
+Sessions are stateless: the portal stores nothing server-side, so a restart
+leaves outstanding session tokens valid until they expire
+(`SESSION_TTL_HOURS`). Each environment signs with its own
+`SESSION_SIGNING_SECRET`, so a token minted by the test stack cannot validate
+against live.
 
 ### Catalog discovery (`src/server/stripe_gateway/catalog.py`)
 
@@ -170,12 +180,12 @@ five minutes, so a toggle can take up to five minutes to take effect there.
 ### Routers → gateway module mapping
 
 `main.py` wires six routers, each thin and delegating to a `stripe_gateway/*`
-or `auth0_gateway`/`email_delivery` module that owns the actual Stripe/Auth0
-calls:
+or `auth0_gateway`/`neural_nexus_gateway` module that owns the actual
+Stripe/Auth0/Neural Nexus calls:
 
 | Router | Gateway modules |
 |---|---|
-| `routers/auth.py` | `security/one_time_passcode.py`, `security/session.py`, `email_delivery.py`, `stripe_gateway/customers.py` |
+| `routers/auth.py` | `neural_nexus_gateway.py`, `security/session.py`, `stripe_gateway/customers.py` |
 | `routers/account.py` | `stripe_gateway/customers.py` |
 | `routers/subscription.py` | `stripe_gateway/subscriptions.py`, `stripe_gateway/customers.py`, `stripe_gateway/payment_methods.py`, `stripe_gateway/catalog.py`, `auth0_gateway.py` |
 | `routers/usage.py` | `stripe_gateway/meter_usage.py`, `stripe_gateway/subscriptions.py`, `stripe_gateway/catalog.py` |
@@ -197,22 +207,48 @@ section fetches its own data keyed off `refreshCounter`, bumped by
 Stripe Elements (`@stripe/react-stripe-js`) is used only for the add-card
 SetupIntent form in `PaymentMethodsSection`.
 
-### Environment files
+### Environment files and the two stacks
 
-Two parallel env files switch Stripe environments — `src/server/.env`
-(test keys, `PORTAL_ENV=test`) and `src/server/.env.live` (live keys,
-gitignored), selected via `docker compose --env-file .env.live up`. Every
-variable is declared in `src/server/.env.example` (no values) and as a typed
-field in `src/server/settings.py` (`PortalSettings`, a `pydantic-settings`
-`BaseSettings`) — add new variables in both places. The client has its own
-`src/client/.env.example` (`VITE_API_BASE_URL`).
+The Stripe live and test environments are two simultaneously running stacks,
+one compose file and one env file each (both env files gitignored):
+
+| Stack | Compose file | Env file | Project | Host port | Stripe | Reached by |
+|---|---|---|---|---|---|---|
+| live | `docker-compose.yml` | `.env` | `portal-live` | 8200 | `sk_live_` | Cloudflare tunnel → Vercel client |
+| test | `docker-compose.dev.yml` | `.env.dev` | `portal-test` | 8202 | `sk_test_` | `http://localhost:5171` only |
+
+This mirrors the Neural Nexus API repo's convention, where `.env` is live
+production and `.env.dev` is the test environment. Only the live stack is
+publicly exposed — the host `cloudflared` systemd service routes
+`checkout-api.neuralnexus.site` to host port 8200.
+
+Both compose files name their published port and env file **literally** and set
+an explicit top-level `name:`. They share a directory, so `docker compose`
+auto-loads `./.env` — the live file — as the interpolation source for *both*;
+literal values are what keep the test stack from being steered by live values,
+and distinct project names stop each `up` from treating the other's container
+as an orphan. `.dockerignore` excludes every env file, so no credential is baked
+into an image; values reach the container through the compose `env_file:`
+directive only.
+
+Every variable is declared in `src/server/.env.example` (no values) and as a
+typed field in `src/server/settings.py` (`PortalSettings`, a
+`pydantic-settings` `BaseSettings`) — add new variables in both places. That
+settings class names `.env.dev` as its dotenv file so running the server
+directly on the host defaults to the Stripe test environment.
+
+Two variables must agree with the Neural Nexus API environment being reported
+on: `USAGE_PERIOD_DAYS` (30 in production, 0 in development) and `DEV`
+(`FALSE` in live, or every anonymous visitor collapses onto one Stripe
+customer). The client has its own `src/client/.env.development` (test server)
+and `src/client/.env.production` (the tunnel hostname, committed on purpose).
 
 ### Testing
 
 `src/server/tests/test_portal_flow.py` mocks the Stripe/Auth0 gateway
 functions directly (via `monkeypatch.setattr` on the imported module, not
 HTTP-level mocking) and drives the FastAPI `TestClient` through the full
-one-time-passcode flow, anonymous hashed-ip resolution, `/subscription` and
-`/usage` response shapes, and verified-only endpoint gating.
+email + password login flow, anonymous hashed-ip resolution, `/subscription`
+and `/usage` response shapes, and verified-only endpoint gating.
 `tests/conftest.py` sets required env vars via `os.environ.setdefault`
 *before* `main` is imported by any test module.

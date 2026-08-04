@@ -1,9 +1,21 @@
 """Portal server settings loaded from environment variables.
 
 Every environment variable used by the portal server is declared here and in
-``.env.example``. Switching between the Stripe test environment and the Stripe
-live environment is a matter of pointing docker compose at a different env
-file (``.env`` versus ``.env.live``).
+``.env.example``. The Stripe live environment and the Stripe test environment
+are two env files, one per compose file:
+
+* ``.env`` — live keys, ``PORTAL_ENV=live``, loaded by ``docker-compose.yml``
+  (project ``portal-live``, host port 8200, the stack the public reaches).
+* ``.env.dev`` — test keys, ``PORTAL_ENV=test``, loaded by
+  ``docker-compose.dev.yml`` (project ``portal-test``, host port 8202, local).
+
+Under docker compose the values arrive as real environment variables through
+the ``env_file:`` directive, and every env file is excluded from the image by
+``.dockerignore``. The ``env_file`` below therefore only applies to running the
+server directly on the host (``uvicorn main:app --reload``), and it names
+``.env.dev`` on purpose so that such a run defaults to the Stripe TEST
+environment rather than billing real customers. Real environment variables take
+precedence over it, so pointing a host run at live is an explicit act.
 """
 
 from __future__ import annotations
@@ -18,7 +30,7 @@ class PortalSettings(BaseSettings):
     # unset values left empty ("PORT="); treat those as "use the default"
     # instead of failing integer parsing at startup.
     model_config = SettingsConfigDict(
-        env_file=".env", extra="ignore", env_ignore_empty=True
+        env_file=".env.dev", extra="ignore", env_ignore_empty=True
     )
 
     # Environment identity -------------------------------------------------
@@ -26,7 +38,9 @@ class PortalSettings(BaseSettings):
     dev: str = "FALSE"  # "TRUE" pins the anonymous client ip to the dev value
 
     # HTTP ------------------------------------------------------------------
-    port: int = 8080
+    # No `port` field: the Dockerfile runs `uvicorn --port 8080` and each compose
+    # file publishes its host port literally, so a settings value would be read
+    # by nothing while looking authoritative.
     client_origin: str = "http://localhost:5173"  # comma-separated allowlist
 
     # Session ---------------------------------------------------------------

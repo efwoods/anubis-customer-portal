@@ -11,11 +11,18 @@ Browser at https://checkout.neuralnexus.site   (Vercel: anubis-customer-portal)
         ▼
 https://checkout-api.neuralnexus.site           (Cloudflare tunnel: neuralnexus-api)
         ▼  host cloudflared systemd service, ingress rule -> http://localhost:8200
-portal-server  (local Docker, host-published :8200 -> container :8080)
-        ├──► Stripe
+portal-server  (LIVE stack: project portal-live, .env, :8200 -> container :8080)
+        ├──► Stripe (live keys)
         ├──► Auth0 Management API
         └──► https://api.neuralnexus.site        (login / logout / signup)
+
+portal-server-dev  (TEST stack: project portal-test, .env.dev, :8202)
+        └── not tunnelled; reachable only from this host
 ```
+
+**Only the live stack is public.** The tunnel's ingress rule names host port
+8200, so the test stack on 8202 is unreachable from the internet by
+construction — there is no second hostname to forget to lock down.
 
 **One tunnel serves both hostnames.** Rather than a second tunnel plus a
 `cloudflared` sidecar container, the portal reuses the existing
@@ -83,16 +90,35 @@ Healthy logs show `Registered tunnel connection` (~4 connections).
 
 ---
 
-## 2. Bring the server up
+## 2. Bring the servers up
+
+Each stack names its own compose file; neither takes `--env-file`, because each
+compose file names its env file literally.
 
 ```bash
 cd src/server
-docker compose up --build -d          # portal-server only; no tunnel container
-docker compose ps                     # expect: Up (healthy)
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8200/healthz
+docker compose -f docker-compose.dev.yml up --build -d   # portal-test  :8202  (.env.dev, sk_test_)
+docker compose -f docker-compose.yml     up --build -d   # portal-live  :8200  (.env,     sk_live_)
+
+docker compose -f docker-compose.yml ps                  # expect: Up (healthy)
+curl -s http://localhost:8200/healthz                    # {"ok":true,"environment":"live"}
+curl -s http://localhost:8202/healthz                    # {"ok":true,"environment":"test"}
 ```
 
-The compose `cloudflared` service is **not** started by this command — it is
+Watch the live stack's startup log once: `Tier catalog discovered at startup:
+['free', 'premium', 'pro']` confirms the Stripe environment is provisioned. A
+`NO provisioned tiers` warning instead means checkout and tier changes will
+return HTTP 503 until the Neural Nexus API repo's
+`scripts/provision_stripe_billing.py` has been run against that account's key.
+
+If a stack was previously started under the old shared project name `server`,
+bring it down under that name first or port 8200 stays bound:
+
+```bash
+docker compose -p server -f docker-compose.yml -f docker-compose.dev.yml down
+```
+
+The compose `cloudflared` service is **not** started by these commands — it is
 guarded by the `bundled-tunnel` profile and is only for hosts with no existing
 tunnel (`docker compose --profile bundled-tunnel up --build`, which needs
 `TUNNEL_TOKEN` set and a tunnel hostname pointing at `portal-server:8080`).
@@ -148,42 +174,54 @@ that file needs a new deploy (not just a promote/rollback of an old build).
 
 ## 4. Verify end-to-end
 
-**4a. Tunnel reachable**
+**4a. Tunnel reachable, serving the live environment**
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://checkout-api.neuralnexus.site/healthz
+curl -s https://checkout-api.neuralnexus.site/healthz   # {"ok":true,"environment":"live"}
 ```
-Expect `200`. (`https://checkout-api.neuralnexus.site/reference` should load the
-Scalar API docs in a browser.) Confirm `api.neuralnexus.site` still answers too,
-since the restart in 1c affects both.
+The `environment` field is the check that matters — a `200` alone does not tell
+you which Stripe account is behind it. (`https://checkout-api.neuralnexus.site/reference`
+should load the Scalar API docs in a browser.) Confirm `api.neuralnexus.site`
+still answers too, since the restart in 1c affects both.
 
-**4b. Client → server**
+**4b. CORS from the deployed origin**
+```bash
+curl -si -X OPTIONS https://checkout-api.neuralnexus.site/subscription \
+  -H 'Origin: https://anubis-customer-portal.vercel.app' \
+  -H 'Access-Control-Request-Method: GET' | grep -i access-control-allow-origin
+```
+
+**4c. Client → server**
 - Open the deployed client with DevTools → **Network** open.
 - **Sign up** and/or **log in** with email + password.
   - Auth is proxied to `api.neuralnexus.site` (Auth0). **Login only succeeds for
     an email that already has a Stripe customer.**
 - Confirm:
+  - **No TEST MODE banner** — the live server reports `PORTAL_ENV=live`.
   - Requests go to **`https://checkout-api.neuralnexus.site/...`**.
-  - **No CORS errors** in the Console. (`CLIENT_ORIGIN` already allows
-    `checkout.neuralnexus.site` + the `.vercel.app` URL + `localhost:5171`.)
+  - No CORS errors in the Console.
   - Subscription / usage / invoices sections load.
 
 ---
 
 ## Reminders
 
-- `.env.dev` runs **Stripe test mode** with `DEV=TRUE` (anonymous IP pinned to
-  the dev value). Good for this integration check — not for real customers.
-  Note this is now reachable from the public internet, so anyone who finds the
-  hostname hits the test-mode portal until you switch to `.env.live`.
-- **Going live:** create `src/server/.env.live` (gitignored) with the same
-  `CLIENT_ORIGIN` plus **live** Stripe keys and `DEV=FALSE`, then:
-  ```bash
-  COMPOSE_ENV_FILE=.env.live docker compose up --build -d
-  ```
-  The tunnel needs no change — it routes to host port `:8200` either way, so
-  whichever env file the container was started with is what the public
-  hostname serves.
+- **The live stack (`.env`, project `portal-live`, `:8200`) is the one the
+  tunnel serves.** The test stack (`.env.dev`, project `portal-test`, `:8202`)
+  is deliberately not tunnelled — the ingress rule names 8200 only.
+- The tunnel needs no change when the stack behind it is rebuilt: it routes to
+  host port `:8200` either way, so whichever compose file bound that port is
+  what the public hostname serves.
+- Switching the server between environments needs **no Vercel redeploy**. The
+  banner and the Stripe publishable key both come from `GET /config` at runtime;
+  only `VITE_API_BASE_URL` is build-time, and it does not change.
 - The Neural Nexus API stays at production `https://api.neuralnexus.site`
   (`NN_API_BASE_URL`) in both environments.
+- `USAGE_PERIOD_DAYS` must match that API's own setting (30 in production), or
+  the portal's usage bars disagree with the 402 users hit in the chat app.
+- The Neural Nexus API needs a Stripe webhook endpoint registered at
+  `https://api.neuralnexus.site/stripe/webhook` **per Stripe environment**, with
+  its signing secret in that API's `STRIPE_WEBHOOK_SECRET`. Without it the
+  endpoint returns 503, and a portal-driven downgrade to free cancels the paid
+  subscription without ever creating the replacement free-tier one.
 - The portal server must be listening on host `:8200` before the tunnel is
   useful; if the container is down, the hostname returns a Cloudflare 502.
