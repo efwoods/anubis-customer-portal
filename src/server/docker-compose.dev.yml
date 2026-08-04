@@ -28,6 +28,14 @@ services:
     build: .
     env_file:
       - .env.dev
+    # Lets NN_API_BASE_URL point at a Neural Nexus API running on the HOST
+    # (http://host.docker.internal:9500, the langgraph-api-dev container's
+    # published port) instead of the public https://api.neuralnexus.site.
+    # Without this, `localhost` in that URL resolves to this container, where
+    # nothing is listening, and every sign-in fails with "All connection
+    # attempts failed" surfaced as "The sign-in service is unavailable".
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8202:8080"
     restart: unless-stopped
