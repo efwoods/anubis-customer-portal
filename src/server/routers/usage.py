@@ -16,6 +16,7 @@ import datetime
 from fastapi import APIRouter, Depends
 
 import auth0_gateway
+import usage_observations
 from security.identity import CustomerIdentity, resolve_customer_identity
 from settings import get_portal_settings
 from stripe_gateway import meter_usage as stripe_meter_usage
@@ -102,7 +103,23 @@ async def get_usage(
 
     meters: dict[str, dict] = {}
     for event_name, meter_entry in tier_meters.items():
-        used_to_date = int(usage_by_meter_id.get(meter_entry.get("meter_id"), 0))
+        stripe_used_to_date = int(usage_by_meter_id.get(meter_entry.get("meter_id"), 0))
+        # Stripe governs what the customer is billed, but its meter aggregation
+        # lags the request that produced the usage. The Neural Nexus API pushes
+        # the reconciled figure to /internal/usage-event the moment a turn is
+        # metered, so take whichever is larger: the pushed value carries the
+        # display until Stripe catches up and overtakes it, and the two converge
+        # on the same number. This is the same reconciliation the API applies in
+        # reconcile_period_usage, so the portal, /verify_subscription_status, and
+        # the 402 gate all quote one figure.
+        observed_used_to_date = usage_observations.observed_usage(
+            identity.customer_id, event_name, period_start
+        )
+        used_to_date = (
+            stripe_used_to_date
+            if observed_used_to_date is None
+            else max(stripe_used_to_date, observed_used_to_date)
+        )
         monthly_allotment = meter_entry["monthly_allotment"]
         meters[event_name] = {
             "monthly_allotment": monthly_allotment,

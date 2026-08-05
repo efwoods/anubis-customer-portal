@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiRequest, clearSessionToken, getSessionToken } from "./api";
+import { apiRequest, clearSessionToken, getActiveSessionToken } from "./api";
 import type { CurrentIdentity, PortalConfiguration } from "./types";
 import { AnonymousNotice } from "./components/AnonymousNotice";
 import { BillingInformationSection } from "./components/BillingInformationSection";
@@ -41,7 +41,9 @@ export default function App() {
       }
     } catch (identityError) {
       setIdentity(null);
-      if (getSessionToken() !== null) {
+      // Only a tab that is itself signed in should surface a load failure as an
+      // account error; an anonymous tab must not react to another tab's token.
+      if (getActiveSessionToken() !== null) {
         setLoadError(
           identityError instanceof Error
             ? identityError.message

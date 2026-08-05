@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from scalar_fastapi import get_scalar_api_reference
 
-from routers import account, auth, billing, invoices, subscription, usage
+from routers import account, auth, billing, invoices, subscription, usage, usage_events
 from settings import get_portal_settings
 from stripe_gateway.catalog import get_tier_catalog
 from stripe_gateway.client import configure_stripe
@@ -83,6 +83,7 @@ app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(subscription.router)
 app.include_router(usage.router)
+app.include_router(usage_events.router)
 app.include_router(invoices.router)
 app.include_router(billing.router)
 

@@ -60,6 +60,13 @@ class PortalSettings(BaseSettings):
     auth0_client_id: str = ""
     auth0_client_secret: str = ""
 
+    # Usage events pushed by the Neural Nexus API ----------------------------
+    # Shared secret authenticating POST /internal/usage-event. Must equal the
+    # API's PORTAL_USAGE_EVENT_SECRET exactly or every event is rejected. Empty
+    # makes that endpoint refuse everything, and usage falls back to the Stripe
+    # read alone — correct, just not immediate.
+    usage_event_shared_secret: str = ""
+
     # Neural Nexus API (email + password auth: login / logout / signup) ------
     nn_api_base_url: str = "https://api.neuralnexus.site"
     # Must match the Neural Nexus API's USAGE_PERIOD_DAYS. The portal reproduces

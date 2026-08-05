@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiRequest } from "../api";
+import { apiRequest, subscribeToUsageStream } from "../api";
 import type { UsageReport } from "../types";
 import { PayPerUseToggle } from "./PayPerUseToggle";
 import { UsageMeterBar } from "./UsageMeterBar";
@@ -10,10 +10,11 @@ interface UsageSectionProps {
   onChanged: () => void;
 }
 
-// Usage is spent in the chat app, not this portal, so it drifts stale between
-// portal-driven refreshes. Re-read it on a light interval and whenever the tab
-// regains focus so the meters track the live counter (within Stripe's meter
-// aggregation lag).
+// Usage is spent in the chat app, not this portal. The server pushes each new
+// figure over the usage stream the moment a turn is metered, so the meters move
+// immediately; this poll remains as the reconciliation path, re-reading Stripe
+// (the billing source of truth) and correcting the display if a push was ever
+// missed or the stream was down.
 const USAGE_POLL_INTERVAL_MS = 20_000;
 
 function formatDate(isoDate: string): string {
@@ -50,6 +51,47 @@ export function UsageSection({ isVerified, refreshCounter, onChanged }: UsageSec
   useEffect(() => {
     loadUsage();
   }, [loadUsage, refreshCounter]);
+
+  // Apply a pushed figure to the meter it names, without waiting for a poll.
+  // The pushed value is only ever taken as a floor, for the same reason the
+  // server reconciles with max(): usage within a period never decreases, so a
+  // late or out-of-order frame must not walk a meter backwards. A frame from a
+  // different period means the period rolled over, so the whole report is
+  // re-read rather than patched.
+  useEffect(() => {
+    const unsubscribe = subscribeToUsageStream((event) => {
+      setUsage((currentReport) => {
+        if (currentReport === null) {
+          return currentReport;
+        }
+        if (
+          event.usage_period_start !== null &&
+          event.usage_period_start !== currentReport.usage_period_start
+        ) {
+          loadUsage();
+          return currentReport;
+        }
+        const meter = currentReport.meters[event.meter_event_name];
+        if (meter === undefined || event.used_to_date <= meter.used_to_date) {
+          return currentReport;
+        }
+        const usedToDate = event.used_to_date;
+        return {
+          ...currentReport,
+          meters: {
+            ...currentReport.meters,
+            [event.meter_event_name]: {
+              ...meter,
+              used_to_date: usedToDate,
+              remaining: Math.max(0, meter.monthly_allotment - usedToDate),
+              over_allotment: Math.max(0, usedToDate - meter.monthly_allotment),
+            },
+          },
+        };
+      });
+    });
+    return unsubscribe;
+  }, [loadUsage]);
 
   // Keep the meters current without a manual reload: poll on an interval and
   // refetch immediately when the user returns to the tab. Polling pauses while
