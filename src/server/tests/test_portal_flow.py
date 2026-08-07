@@ -479,3 +479,80 @@ def test_refund_during_pro_trial_retains_trial_to_period_end(client, monkeypatch
     body = response.json()
     assert body["subscription_action"] == "ends_at_period_end"
     assert scheduled["cancel"] is True
+
+
+def test_anonymous_and_account_usage_are_separate_ledgers(client, monkeypatch):
+    """One visitor, one source address, two completely separate usage ledgers.
+
+    Anonymous usage and account usage are separate allotments reported
+    separately. The guarantee is that the two identities never read the same
+    Stripe customer: the anonymous ledger belongs to the customer carrying
+    ``metadata.anonymous_hashed_ip``, and the account ledger belongs to the
+    customer carrying the Auth0 linkage. This test drives both reads from the
+    same client so a future refactor cannot collapse them onto one record.
+    """
+    metered_customer_ids: list[str] = []
+
+    async def fake_fetch_usage(
+        customer_id: str, meter_ids: list[str], start_time: int, end_time: int
+    ) -> dict[str, int]:
+        metered_customer_ids.append(customer_id)
+        return {"mtr_messaging": 25_000, "mtr_documents": 0}
+
+    monkeypatch.setattr(
+        stripe_meter_usage, "fetch_usage_by_meter_id", fake_fetch_usage
+    )
+
+    # ── Anonymous half: resolved by hashed ip, no subscription, free tier ──
+    async def fake_find_anonymous(hashed_ip: str) -> str | None:
+        return "cus_anonymous"
+
+    monkeypatch.setattr(
+        stripe_customers, "find_customer_id_by_anonymous_hashed_ip", fake_find_anonymous
+    )
+
+    async def fake_no_subscription(customer_id: str) -> dict | None:
+        return None
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "get_current_subscription", fake_no_subscription
+    )
+
+    anonymous_usage = client.get("/usage")
+    assert anonymous_usage.status_code == 200
+    anonymous_body = anonymous_usage.json()
+    # An anonymous visitor is a free-tier user: the same catalog allotment a
+    # verified free-tier user gets, on its own ledger.
+    assert anonymous_body["tier"] == "free"
+    assert anonymous_body["pay_per_use_enabled"] is False
+    assert (
+        anonymous_body["meters"]["messaging_tokens"]["monthly_allotment"]
+        == SAMPLE_CATALOG["free"]["meters"]["messaging_tokens"]["monthly_allotment"]
+    )
+    assert anonymous_body["meters"]["messaging_tokens"]["used_to_date"] == 25_000
+    # Free tier carries no document-upload meter, so none is reported.
+    assert "document_upload_tokens" not in anonymous_body["meters"]
+
+    # ── Account half: same client, now signed in ──────────────────────────
+    token = _sign_in(client, monkeypatch)
+
+    async def fake_get_current_subscription(customer_id: str) -> dict | None:
+        return SAMPLE_PRO_TRIAL_SUBSCRIPTION
+
+    monkeypatch.setattr(
+        stripe_subscriptions, "get_current_subscription", fake_get_current_subscription
+    )
+
+    account_usage = client.get("/usage", headers={"Authorization": f"Bearer {token}"})
+    assert account_usage.status_code == 200
+    account_body = account_usage.json()
+    assert account_body["tier"] == "pro"
+    assert (
+        account_body["meters"]["messaging_tokens"]["monthly_allotment"]
+        == SAMPLE_CATALOG["pro"]["meters"]["messaging_tokens"]["monthly_allotment"]
+    )
+
+    # The two reads hit two different Stripe customers — never the same record,
+    # which is what keeps the allotments and the reported numbers separate.
+    assert metered_customer_ids == ["cus_anonymous", "cus_test"]
+    assert len(set(metered_customer_ids)) == 2
