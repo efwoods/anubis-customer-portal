@@ -18,13 +18,19 @@ order" section for the sequence to work them in.
 First verified 2026-08-18. Re-probed against both running stacks and both
 Stripe accounts on 2026-09-02, then worked through to completion the same day.
 
-**All eight defects are closed.** D2 and D3 were already fixed; D4 was fixed in
-code (commit `a932a7f`); D1, D5, D3', D7 and the live half of D8 were closed by
-configuration plus a rebuild of `portal-live` and a `--force-recreate` of
-`langgraph-api-prod`, all verified against the running services (see
-"Verification" at the end). One task remains and it is not a defect: deploying
-the portal **client** to Vercel, so the live embed gets the single sign-on
-listener and the post-Checkout return.
+**The eight original defects are closed.** D2 and D3 were already fixed; D4 was
+fixed in code (commit `a932a7f`); D1, D5, D3', D7 and the live half of D8 were
+closed by configuration plus a rebuild of `portal-live` and a `--force-recreate`
+of `langgraph-api-prod`, all verified against the running services (see
+"Verification" at the end).
+
+**One new defect was found while verifying D1, and it is open: D9.** Auth0
+`app_metadata` is shared mutable state between the two Stripe environments, and
+one account's live billing identity has already been overwritten by its test
+one. Read D9 before trusting `subscription_status` for any account that exists
+in both. Also outstanding, though not a defect: deploying the portal **client**
+to Vercel, so the live embed gets the single sign-on listener and the
+post-Checkout return.
 
 ## Verified status
 
@@ -320,6 +326,60 @@ change, so nothing on the portal side needs a rebuild for this. All four files
 now read 0 (portal `.env` / `.env.dev`, `anubis/.env` / `.env.dev`). The
 production API container still has `USAGE_PERIOD_DAYS=30` in its environment
 until it is recreated — see "Restarts still owed" below.
+
+### D9 — one Auth0 tenant, two Stripe accounts, one shared `app_metadata` — **OPEN**
+
+Found 2026-09-02 while checking whether any account diverged during the D1
+outage. It is not caused by D1 and is not fixed by fixing it.
+
+D6 already records that a single Auth0 tenant
+(`dev-y3wkm2zfq1qzlef0.us.auth0.com`) serves both Neural Nexus environments
+while there are two Stripe accounts, and draws the conclusion that a test
+account must sign in at the test portal and a live account at the live portal.
+The deeper consequence was not drawn: **`app_metadata` is a single set of
+fields that BOTH environments write.** `subscription_status` and
+`stripe_customer_id` are not namespaced by Stripe mode, so for any email present
+in both accounts the last webhook to fire wins, whichever environment it came
+from.
+
+That has already happened. `habite9140@robustq.com` exists in both:
+
+| | Stripe customer | Subscription | State |
+|---|---|---|---|
+| live | `cus_VArjpq9vVFLriC` | `sub_1UAW06Limk9GVblr37b6Y71H` | trialing, `cancel_at_period_end=true` |
+| test | `cus_VBRR9JTcirLWZ5` | `sub_1UB4ZOLimk9GVblr2mugNBSz` | trialing, `cancel_at_period_end=false` |
+
+Auth0 currently holds the **test** values — `stripe_customer_id` is
+`cus_VBRR9JTcirLWZ5`, which does not exist in the live Stripe account at all
+(verified: `InvalidRequestError` on retrieve with the `sk_live_` key). So the
+production API, serving that user, reads a Stripe customer id it cannot resolve,
+and a `subscription_status` describing a subscription in the wrong account. The
+live cancellation recorded in Stripe on 2026-09-01 is invisible there.
+
+Fixing D1 does not repair this and slightly sharpens it: until 2026-09-02 only
+the test environment's webhook was working, so test writes were unopposed. Now
+both environments write, and the field flips to whichever fired last. The five
+live events still inside Stripe's retry window will overwrite it with the live
+values — correct for live, and clobbered again the next time that email is
+touched in test.
+
+Blast radius today is one account (3 live customer emails, 8 test, 1 overlap),
+so this is not urgent — but it is silent, and it grows with every email reused
+across environments.
+
+Fix — all of these are in the `anubis` repo, none in this one:
+1. **Separate Auth0 tenants per environment.** The correct fix; makes the class
+   of bug impossible and also removes D6's sign-in trap.
+2. **Namespace the fields by Stripe mode** — `subscription_status` for live and
+   `subscription_status_test` (or an equivalent) for test, chosen from the
+   configured key's mode. Cheaper, and keeps one tenant.
+3. **Never reuse an email across environments.** Operational discipline only,
+   with nothing enforcing it — this is what is in place now, and it has already
+   failed once.
+
+Until one of those lands, treat `app_metadata.subscription_status` as
+authoritative only for accounts that exist in exactly one Stripe account, and
+repair `habite9140@robustq.com` by hand if that account matters.
 
 ## Restarts — all applied 2026-09-02
 
