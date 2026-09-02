@@ -16,9 +16,15 @@ the fix for each; they are numbered in discovery order, so read the "Suggested
 order" section for the sequence to work them in.
 
 First verified 2026-08-18. Re-probed against both running stacks and both
-Stripe accounts on 2026-09-02; D2 and D3 are now fixed, D1's fix instruction
-was wrong and has been rewritten, and the stale measurements below were
-refreshed. D1, D5, D3', D4, and D7 remain open.
+Stripe accounts on 2026-09-02, then worked through to completion the same day.
+
+**All eight defects are closed.** D2 and D3 were already fixed; D4 was fixed in
+code (commit `a932a7f`); D1, D5, D3', D7 and the live half of D8 were closed by
+configuration plus a rebuild of `portal-live` and a `--force-recreate` of
+`langgraph-api-prod`, all verified against the running services (see
+"Verification" at the end). One task remains and it is not a defect: deploying
+the portal **client** to Vercel, so the live embed gets the single sign-on
+listener and the post-Checkout return.
 
 ## Verified status
 
@@ -32,8 +38,8 @@ refreshed. D1, D5, D3', D4, and D7 remain open.
 | Anonymous `/subscription` | 200, no customer matched from host curl | 200, `cus_V1fzo1DIo5UB0M` |
 | Anonymous `/usage` | 200, calendar-month window (`2026-09-01 → 2026-10-01`) | 200, 153,865 tokens via event-summaries fallback |
 | Verified login | works (NN prod API), but Stripe **live** customers only (see D6) | fixed 2026-08-31 — reaches the Stripe-test NN API on :9600; a bad password now returns a real `401` (see D2) |
-| NN `/stripe/webhook` | **503** (see D1) — endpoint *is* registered in live Stripe, the secret is not stored | **400** (invalid signature) on :9600 — configured and verifying |
-| Test suite | — | 18 passed, **2 failed** (see D4) |
+| NN `/stripe/webhook` | **400** (invalid signature) — fixed 2026-09-02, was 503 (see D1) | **400** (invalid signature) on :9600 — configured and verifying |
+| Test suite | — | **20 passed** (D4 fixed) |
 
 ## End-to-end function (both environments, identical code)
 
@@ -68,15 +74,24 @@ pins the anonymous client ip to `172.18.0.1` (`security/identity.py:50`).
    portal writes **only to Stripe**.
 6. **Propagate** — Stripe fires webhooks; the Neural Nexus API's
    `/stripe/webhook` reconciles Auth0 `app_metadata.subscription_status` and
-   creates the $0 free-tier subscription after a downgrade. **This is the step
-   that is currently dead in live (D1).**
+   creates the $0 free-tier subscription after a downgrade. Dead in live until
+   2026-09-02; the signing secret is now stored and the endpoint verifies (D1).
 7. **Live usage** — the API is supposed to POST HMAC-signed events to
    `/internal/usage-event`, which fans out over SSE (`/usage/stream`) so meters
-   move without waiting for Stripe aggregation. **Not wired in live (D3').**
+   move without waiting for Stripe aggregation. Wired in both environments as of
+   2026-09-02 (D3').
 
 ## Defects and fixes
 
-### D1 — Neural Nexus `/stripe/webhook` returns 503 in live (highest impact)
+### D1 — Neural Nexus `/stripe/webhook` returned 503 in live — **FIXED 2026-09-02**
+
+**Resolved 2026-09-02**: the signing secret was revealed in the Stripe
+Dashboard, stored in `anubis/.env`, and `langgraph-api-prod` force-recreated.
+`POST https://api.neuralnexus.site/stripe/webhook` now returns **400**
+`{"detail":"Invalid webhook signature."}` — verifying, as it should for an
+unsigned probe — both through the tunnel and directly on :8124. The endpoint was
+never rotated, so its three-day retry backlog survived and drained into Auth0.
+The original finding follows.
 
 `POST https://api.neuralnexus.site/stripe/webhook` → **503**, both through the
 tunnel and directly at `http://localhost:8124/stripe/webhook`.
@@ -174,7 +189,7 @@ dev Neural Nexus API on :9600 (or the test portal's own `POST /auth/signup`,
 which now proxies there), so `ensure_stripe_customer` in
 `anubis/src/security/auth.py` lands the customer in the Stripe test account.
 
-### D7 — `portal-live` is running a stale image (missing the usage-stream routes)
+### D7 — `portal-live` was running a stale image — **FIXED 2026-09-02**
 
 `/openapi.json` on :8200 lists no `/usage/stream` or `/usage/stream-ticket`,
 while :8202 lists both, and the live logs show the deployed client polling them
@@ -209,7 +224,7 @@ All three should read 5171. (`src/client/.env.development:11`'s
 the separate Neural Nexus frontend app, which really does run on 5173:
 `react-vite-dev` is up on that port.)
 
-### D8 — Single sign-on from the Neural Nexus application — **FIXED in test 2026-09-02, still off in live**
+### D8 — Single sign-on from the Neural Nexus application — **FIXED in test and live, 2026-09-02**
 
 Signing in to the Neural Nexus application at `http://localhost:5173/billing`
 left the embedded portal showing its own sign-in card, and a password attempt
@@ -249,7 +264,7 @@ it at lifespan startup, and the `portal-live` image has no
 `/auth/single_sign_on` route at all until the D7 rebuild. See "Restarts still
 owed" below.
 
-### D3' — Real-time usage push is not enabled in either environment
+### D3' — Real-time usage push was not enabled in either environment — **FIXED 2026-09-02**
 
 `PORTAL_USAGE_EVENT_URL` / `PORTAL_USAGE_EVENT_SECRET` appear only in
 `anubis/.env.example`, not in `anubis/.env` or `anubis/.env.dev`. The portal
@@ -271,7 +286,7 @@ Note for later: the portal's `USAGE_EVENT_SHARED_SECRET` is the *same value* in
 live portal. Pre-existing, low severity, and not changed here because it needs
 both sides moved together — worth splitting when the live pair is next rotated.
 
-### D4 — Two tests fail; the failures make real network calls
+### D4 — Two tests failed, making real network calls — **FIXED 2026-09-02**
 
 `tests/test_portal_flow.py::test_refund_of_paid_subscription_cancels_immediately`
 and `::test_refund_during_pro_trial_retains_trial_to_period_end` fail with
@@ -289,7 +304,7 @@ only sets environment variables at module scope and has no `monkeypatch`
 fixture); `monkeypatch.setattr(routers.invoices, "get_tier_catalog",
 fake_get_tier_catalog)` was added alongside them. `pytest -q` → **20 passed**.
 
-### D5 — Usage window disagrees with the API in live (correctness, not an outage)
+### D5 — Usage window disagreed with the API in live — **FIXED 2026-09-02**
 
 `USAGE_PERIOD_DAYS` is **0** (calendar month) in the portal's `.env` but **30**
 (rolling) in `anubis/.env` and in the running API container. CLAUDE.md and both
@@ -306,62 +321,85 @@ now read 0 (portal `.env` / `.env.dev`, `anubis/.env` / `.env.dev`). The
 production API container still has `USAGE_PERIOD_DAYS=30` in its environment
 until it is recreated — see "Restarts still owed" below.
 
-## Restarts still owed
+## Restarts — all applied 2026-09-02
 
-Every remaining fix is configuration that is already written to disk but not yet
-loaded by a running container. Three commands apply all of it. Note the
-`--env-file` on the dev one: both anubis compose files share a directory, so
-`docker compose` auto-loads `./.env` (the live file) as the interpolation
-source, and without the flag `PORT` falls back to 8123 and the published port
-moves off 9600.
+Every configuration fix above needed a container **recreate**, not a restart:
+`env_file` values are baked into a container at *create* time, so `docker
+restart` and `docker compose restart` reuse the old environment. Worse, plain
+`docker compose up -d` is a silent no-op after an env-file edit, because compose
+compares the service *definition* and an env file's contents are not part of
+that comparison. Both traps were hit here before `--force-recreate` was used.
 
 ```bash
-# 1. Live portal — picks up D7 (the stale image: no /usage/stream,
-#    /usage/stream-ticket or /auth/single_sign_on) and the D8 live secret.
+# 1. Live portal — D7 (stale image: no /usage/stream, /usage/stream-ticket or
+#    /auth/single_sign_on) and the portal half of the D8 live secret.
 cd anubis-customer-portal/src/server
 docker compose -f docker-compose.yml up --build -d
 
-# 2. Production Neural Nexus API — picks up D5 (USAGE_PERIOD_DAYS 30 -> 0),
-#    D3' (the usage-event push) and the D8 live secret. Add D1's webhook
-#    secret first if you have it, so this is one restart rather than two.
+# 2. Production Neural Nexus API — D1 (webhook secret), D5 (USAGE_PERIOD_DAYS
+#    30 -> 0), D3' (usage-event push) and the API half of D8, in one recreate.
 cd anubis
-docker compose -p anubis -f docker-compose-prod.yml up -d langgraph-api-prod
+docker compose -p anubis -f docker-compose-prod.yml up -d --force-recreate langgraph-api-prod
 
-# 3. Development Neural Nexus API — picks up D3' for the test pair.
+# 3. Development Neural Nexus API — D3' for the test pair. The --env-file is
+#    required: both anubis compose files share a directory, so docker compose
+#    auto-loads ./.env (the LIVE file) as the interpolation source, and without
+#    the flag PORT falls back to 8123 and the published port moves off 9600.
 cd anubis
 docker compose -p anubis-dev -f docker-compose.yml --env-file .env.dev up -d langgraph-api-dev
 ```
 
-**D1 is the one item still needing a human**, because Stripe returns a webhook
-endpoint's signing secret only in the create response. Reveal it in the
-Dashboard (Developers → Webhooks → "Your account" → the
-`api.neuralnexus.site/stripe/webhook` endpoint) and put it in `anubis/.env` as
-`STRIPE_WEBHOOK_SECRET` before running command 2.
+A note worth keeping for the next time a webhook secret goes missing: the
+endpoint was **not** rotated. `provision_stripe_webhook.py --rotate` looks like
+the self-service answer, but every delivery was failing with 503 and Stripe
+retries each for about three days — that backlog is exactly what heals the Auth0
+divergence once a valid secret lands. Rotating deletes the endpoint and its
+queued retries with it, turning a recoverable outage into permanent drift.
+Revealing the secret in the Dashboard cost one click and lost nothing.
 
-Do **not** reach for `provision_stripe_webhook.py --rotate` as a shortcut here.
-Every delivery to that endpoint is currently failing with 503, and Stripe is
-still retrying each of them for about three days — that retry backlog is
-precisely what will heal the Auth0 divergence the moment a valid secret is in
-place. Rotating deletes the endpoint and its queued retries along with it,
-turning a recoverable outage into permanent drift for the accounts in that
-window. Rotate only if the secret genuinely cannot be revealed.
+## What remains
 
-## Suggested order
+Nothing in this repository, and no defect anywhere. One deployment task:
 
-D2, D3, and D4 are done in code. D5, D3', and the D8 live secret are done in
-configuration and need only the restarts above. What genuinely remains:
-
-D1 (live is silently diverging from Auth0 today; fetch the Dashboard secret) →
-restart command 2, which lands D1, D5, D3' and the API half of D8 together →
-restart command 1 (D7 + the portal half of D8) → restart command 3 (D3' in
-test) → deploy the portal client to Vercel, so the live embed gets the single
-sign-on listener and the post-Checkout return.
+**Deploy the portal client to Vercel.** The server side of single sign-on and
+the post-Checkout return are live, but the *deployed* client bundle at
+`checkout.neuralnexus.site` predates `singleSignOn.ts` and `appReturn.ts`. Until
+it ships, a customer opening the application's live billing page still meets the
+portal's own sign-in card in the frame — the designed fallback, not a break —
+and a live Checkout still ends on the portal rather than back in the
+application. Both work today against the local client on :5171.
 
 D1, D5, and D3' are **configuration changes in the `anubis` repo**, not code
 changes here. D7 is a rebuild of this repo's live stack. D4 and the D3 residue
 are the only code changes in this repo.
 
 ## Verification
+
+Results recorded 2026-09-02, after the three recreates above:
+
+| Check | Before | After |
+|---|---|---|
+| `POST https://api.neuralnexus.site/stripe/webhook` (D1) | 503 | **400** `Invalid webhook signature.` |
+| same, direct on `:8124` (D1) | 503 | **400** |
+| `POST :8124/redeem_billing_portal_exchange_code` (D8) | 503 `not configured` | **401** `Redemption requests must be signed.` |
+| `POST :8200/auth/single_sign_on` (D8) | 404, then 502 | **400** `The exchange code is not valid.` |
+| `:8200/openapi.json` (D7) | `/usage` only | `/usage`, `/usage/stream`, `/usage/stream-ticket`, `/auth/single_sign_on` |
+| prod API `USAGE_PERIOD_DAYS` (D5) | 30 | **0**, matching the portal's `2026-09-01 → 2026-10-01` |
+| prod + dev API `PORTAL_USAGE_EVENT_URL` (D3') | empty | `:8200` / `:8202`, secrets matching each portal |
+| `pytest -q` (D4) | 18 passed, 2 failed | **20 passed** |
+| tunnel `https://checkout-api.neuralnexus.site/healthz` | 200 | 200 |
+
+The live single sign-on chain was also exercised end to end: a code minted with
+the live shared secret, signed, and spent at `:8200/auth/single_sign_on` was
+accepted by the production API — signature verified, audience/issuer/expiry
+checked, `jti` spent — and came back **403 "No billing account is associated
+with this email"** only at the final step, because that account has a Stripe
+*test* customer and no live one (confirmed: 0 live customers for that email).
+That is D6's documented and correct behaviour, and it proves every link in the
+chain ahead of the Stripe lookup. Do not repeat this against a real live
+customer's email: it would mint a genuine portal session for their account.
+
+The original per-defect procedures follow.
 
 - **D1**: `curl -s -o /dev/null -w '%{http_code}' -X POST https://api.neuralnexus.site/stripe/webhook -d '{}'`
   — expect 400 (bad signature), not 503. Then make a tier change in the live
