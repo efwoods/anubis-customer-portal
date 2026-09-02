@@ -95,8 +95,20 @@ pins the anonymous client ip to `172.18.0.1` (`security/identity.py:50`).
 Dashboard, stored in `anubis/.env`, and `langgraph-api-prod` force-recreated.
 `POST https://api.neuralnexus.site/stripe/webhook` now returns **400**
 `{"detail":"Invalid webhook signature."}` — verifying, as it should for an
-unsigned probe — both through the tunnel and directly on :8124. The endpoint was
-never rotated, so its three-day retry backlog survived and drained into Auth0.
+unsigned probe — both through the tunnel and directly on :8124.
+
+The endpoint was never rotated, so its retry backlog survived — but as of
+2026-09-02 19:20 UTC **nothing has drained yet**. The only `/stripe/webhook`
+entries in the recreated container's log are unsigned verification probes; no
+real Stripe delivery has arrived. That is expected rather than alarming: five
+handled-type events fired during the outage (four for one account, one
+`customer.updated`), all are still inside Stripe's ~3-day retry window, and
+after two days of failures the backoff interval is hours. Re-check the log for a
+signed delivery returning 200 before considering the propagation path proven end
+to end. The endpoint is confirmed still `enabled` — Stripe did not auto-disable
+it during the outage. Note that when those retries do land they will overwrite
+Auth0 for the account named in D9.
+
 The original finding follows.
 
 `POST https://api.neuralnexus.site/stripe/webhook` → **503**, both through the
