@@ -11,6 +11,7 @@ import auth0_gateway
 import main
 import neural_nexus_gateway
 import routers.auth
+import routers.invoices
 import routers.subscription
 import routers.usage
 from stripe_gateway import customers as stripe_customers
@@ -29,7 +30,10 @@ SAMPLE_CATALOG = {
                 "meter_event_name": "messaging_tokens",
                 "meter_id": "mtr_messaging",
                 "price_id": "price_free_messaging",
-                "monthly_allotment": 200_000,
+                # Matches the free-tier allotment in the Neural Nexus repo's
+                # tiers.py; it was raised from 200,000 and this fixture had not
+                # followed.
+                "monthly_allotment": 2_000_000,
                 "overage_price_per_million": 2.0,
                 "overage_price_per_unit_usd": None,
                 "unit": "tokens",
@@ -92,6 +96,11 @@ def client(monkeypatch):
 
     monkeypatch.setattr(routers.subscription, "get_tier_catalog", fake_get_tier_catalog)
     monkeypatch.setattr(routers.usage, "get_tier_catalog", fake_get_tier_catalog)
+    # Every module that binds get_tier_catalog into its own namespace needs its
+    # own patch — `from stripe_gateway.catalog import get_tier_catalog` copies
+    # the reference, so patching the catalog module would not reach any of them.
+    # Missing routers.invoices sent the refund tests to the real Stripe API.
+    monkeypatch.setattr(routers.invoices, "get_tier_catalog", fake_get_tier_catalog)
     # The lifespan warms the catalog at startup; keep tests off the network.
     monkeypatch.setattr(main, "get_tier_catalog", fake_get_tier_catalog)
 
@@ -147,6 +156,116 @@ def test_password_login_and_me(client, monkeypatch):
         "email": "customer@example.com",
         "name": "Test User",
     }
+
+
+def test_single_sign_on_issues_the_same_session_as_login(client, monkeypatch):
+    """A code handed over by the Neural Nexus application signs the customer in.
+
+    The session it yields must be the one /auth/login yields — same shape, same
+    bearer token, accepted by /me the same way — because everything downstream of
+    sign-in was written against that session and knows nothing about how it was
+    obtained.
+    """
+
+    async def fake_find_customer_by_email(email: str) -> dict | None:
+        return {"id": "cus_test", "email": email}
+
+    monkeypatch.setattr(
+        stripe_customers, "find_customer_by_email", fake_find_customer_by_email
+    )
+
+    async def fake_redeem(shared_secret: str, exchange_code: str) -> dict:
+        assert shared_secret == "test-exchange-secret"
+        assert exchange_code == "exchange-code-from-the-application"
+        return {"user_id": "auth0|test", "email": "customer@example.com"}
+
+    monkeypatch.setattr(
+        neural_nexus_gateway, "redeem_billing_portal_exchange_code", fake_redeem
+    )
+
+    response = client.post(
+        "/auth/single_sign_on",
+        json={"exchange_code": "exchange-code-from-the-application"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] == "customer@example.com"
+    assert body["customer_id"] == "cus_test"
+
+    async def fake_get_customer(customer_id: str) -> dict:
+        return {"id": customer_id, "name": "Test User", "email": "customer@example.com"}
+
+    monkeypatch.setattr(stripe_customers, "get_customer", fake_get_customer)
+
+    me_response = client.get(
+        "/me", headers={"Authorization": f"Bearer {body['token']}"}
+    )
+    assert me_response.status_code == 200
+    assert me_response.json()["kind"] == "verified"
+
+
+def test_single_sign_on_session_holds_no_neural_nexus_credential(client, monkeypatch):
+    """The Neural Nexus refresh token never crosses into this origin, so a
+    session created this way has nothing for /auth/logout to revoke."""
+    import jwt as pyjwt
+
+    from settings import get_portal_settings
+
+    async def fake_find_customer_by_email(email: str) -> dict | None:
+        return {"id": "cus_test", "email": email}
+
+    monkeypatch.setattr(
+        stripe_customers, "find_customer_by_email", fake_find_customer_by_email
+    )
+
+    async def fake_redeem(shared_secret: str, exchange_code: str) -> dict:
+        return {"user_id": "auth0|test", "email": "customer@example.com"}
+
+    monkeypatch.setattr(
+        neural_nexus_gateway, "redeem_billing_portal_exchange_code", fake_redeem
+    )
+
+    response = client.post(
+        "/auth/single_sign_on", json={"exchange_code": "any-code"}
+    )
+    assert response.status_code == 200
+    claims = pyjwt.decode(
+        response.json()["token"],
+        get_portal_settings().session_signing_secret,
+        algorithms=["HS256"],
+    )
+    assert "nn_refresh_token" not in claims
+
+
+def test_single_sign_on_with_a_refused_code_is_rejected(client, monkeypatch):
+    """An expired, forged, or already-spent code yields no session."""
+
+    async def fake_redeem(shared_secret: str, exchange_code: str) -> dict:
+        raise neural_nexus_gateway.NeuralNexusAuthError(
+            "This sign-in link is no longer valid.", status_code=400
+        )
+
+    monkeypatch.setattr(
+        neural_nexus_gateway, "redeem_billing_portal_exchange_code", fake_redeem
+    )
+
+    response = client.post(
+        "/auth/single_sign_on", json={"exchange_code": "expired-code"}
+    )
+    assert response.status_code == 400
+
+
+def test_single_sign_on_refuses_when_the_shared_secret_is_unset(client, monkeypatch):
+    """Unconfigured is a supported state: refuse, and let the embedding page
+    fall back to this portal's own sign-in card."""
+    from settings import get_portal_settings
+
+    monkeypatch.setattr(get_portal_settings(), "nn_exchange_shared_secret", "")
+
+    response = client.post(
+        "/auth/single_sign_on", json={"exchange_code": "any-code"}
+    )
+    assert response.status_code == 503
 
 
 def test_wrong_password_rejected(client, monkeypatch):

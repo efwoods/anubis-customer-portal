@@ -31,6 +31,10 @@ SUBSCRIPTION_TIERS = ("free", "pro", "premium")
 
 class TierChangeBody(BaseModel):
     tier: str
+    # Where in the Neural Nexus application this customer came from, so Stripe's
+    # round trip can end where it started. Optional: a customer using the portal
+    # directly has nowhere else to be returned to.
+    return_to: str | None = None
 
 
 class PayPerUseBody(BaseModel):
@@ -93,6 +97,32 @@ def _resolve_return_origin(request: Request) -> str:
         if candidate in allowlist_normalized:
             return allowlist_normalized[candidate]
     return allowlist[0]
+
+
+def _validated_app_return_url(return_to: str | None) -> str | None:
+    """The application URL to hand the customer back to, or None.
+
+    Checkout's ``success_url`` ends up in an address bar the customer can edit
+    and in links that can be sent to them, so a caller-supplied return target is
+    only honored when its ORIGIN is one this portal is configured to return
+    people to (``APP_RETURN_ORIGIN``). Anything else — another site, a
+    ``javascript:`` URL, a malformed string — is dropped rather than refused,
+    because a plan change must not fail over the address the customer would have
+    been sent to afterwards.
+
+    @param return_to The candidate URL, as supplied by the client.
+    @returns The URL when it is safe to redirect to, otherwise None.
+    """
+    if not return_to:
+        return None
+    parsed_return_url = urllib.parse.urlsplit(return_to)
+    if parsed_return_url.scheme not in ("http", "https"):
+        return None
+    if not parsed_return_url.netloc:
+        return None
+    candidate_origin = f"{parsed_return_url.scheme}://{parsed_return_url.netloc}"
+    allowed_origins = get_portal_settings().app_return_origin_list
+    return return_to if candidate_origin in allowed_origins else None
 
 
 def _validate_tier(tier: str) -> str:
@@ -221,6 +251,7 @@ async def create_subscription_checkout(
         catalog,
         _resolve_return_origin(request),
         include_trial=not trial_already_used,
+        app_return_url=_validated_app_return_url(body.return_to),
     )
     return {
         "action": "start_checkout",

@@ -54,7 +54,7 @@ STRIPE_SECRET_KEY=sk_test_... .venv/bin/python scripts/stripe_test_mode_smoke.py
 # Client — local dev (reads .env.development → the test server on :8202)
 cd src/client
 npm install
-npm run dev            # http://localhost:5173
+npm run dev            # http://localhost:5171
 npm run build          # tsc -b && vite build
 ```
 

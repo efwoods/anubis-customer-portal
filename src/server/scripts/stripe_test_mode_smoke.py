@@ -80,7 +80,7 @@ async def run_smoke_test() -> int:
 
         print("== 3. Checkout session (pro, trial) ==")
         checkout_session = await create_checkout_session(
-            customer_id, "pro", catalog, "http://localhost:5173", include_trial=True
+            customer_id, "pro", catalog, "http://localhost:5171", include_trial=True
         )
         assert checkout_session.get("url"), "checkout session has no url"
         print(f"  checkout url: {checkout_session['url'][:64]}…")

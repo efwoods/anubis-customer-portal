@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "../api";
+import { withAppReturnUrl } from "../appReturn";
 import type { SubscriptionActionResult, SubscriptionStatus } from "../types";
 import { TierSwitcher } from "./TierSwitcher";
 
@@ -48,6 +49,43 @@ export function storePendingTierChange(tier: string): void {
   }
 }
 
+/**
+ * Send the browser to a Stripe-hosted page, such as a Checkout session.
+ *
+ * Stripe refuses to be framed: every Stripe-hosted page answers with
+ * `X-Frame-Options: SAMEORIGIN` and a `frame-ancestors 'self'` content security
+ * policy. The Neural Nexus billing page embeds this portal in an iframe, so
+ * navigating this window while embedded hands the frame a document the browser
+ * then declines to render, and the customer sees a blank white frame instead of
+ * a payment page. Navigating the top-level window takes the whole tab to
+ * Stripe, which is where a payment page belongs. Cross-origin top navigation is
+ * permitted here because the navigation happens under the click that asked for
+ * the plan change.
+ *
+ * @param stripeHostedPageUrl The URL Stripe returned for the page to open.
+ */
+export function navigateToStripeHostedPage(stripeHostedPageUrl: string): void {
+  const topWindow = window.top;
+  const isEmbeddedInAnotherPage = topWindow !== null && topWindow !== window.self;
+
+  if (isEmbeddedInAnotherPage) {
+    try {
+      topWindow.location.href = stripeHostedPageUrl;
+      return;
+    } catch {
+      // A frame that is not allowed to navigate its top-level window throws
+      // here. A new tab still gets the customer to Stripe, so the plan change
+      // completes rather than dead-ending.
+      const openedTab = window.open(stripeHostedPageUrl, "_blank", "noopener");
+      if (openedTab) {
+        return;
+      }
+    }
+  }
+
+  window.location.href = stripeHostedPageUrl;
+}
+
 export async function startPendingTierCheckout(): Promise<boolean> {
   const tier = readPendingTierChange();
   if (!tier) {
@@ -56,10 +94,10 @@ export async function startPendingTierCheckout(): Promise<boolean> {
   clearPendingTierChange();
   const result = await apiRequest<SubscriptionActionResult>("/subscription/change", {
     method: "POST",
-    body: { tier },
+    body: withAppReturnUrl({ tier }),
   });
   if (result.action === "start_checkout" && result.url) {
-    window.location.href = result.url;
+    navigateToStripeHostedPage(result.url);
     return true;
   }
   return false;
@@ -97,10 +135,10 @@ export function SubscriptionSection({
     try {
       const result = await apiRequest<SubscriptionActionResult>(path, {
         method: "POST",
-        body,
+        body: withAppReturnUrl(body),
       });
       if (result.action === "start_checkout" && result.url) {
-        window.location.href = result.url;
+        navigateToStripeHostedPage(result.url);
         return;
       }
       setActionMessage(result.message);

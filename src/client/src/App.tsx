@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiRequest, clearSessionToken, getActiveSessionToken } from "./api";
+import {
+  navigateToApplication,
+  readAppReturnUrl,
+  resolveApplicationAvatarsUrl,
+} from "./appReturn";
 import type { CurrentIdentity, PortalConfiguration } from "./types";
 import { AnonymousNotice } from "./components/AnonymousNotice";
 import { BillingInformationSection } from "./components/BillingInformationSection";
@@ -15,6 +20,7 @@ import {
 } from "./components/SubscriptionSection";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageSection } from "./components/UsageSection";
+import { subscribeToSingleSignOn } from "./singleSignOn";
 import { applyTheme, getStoredTheme, toggleTheme, type PortalTheme } from "./theme";
 
 export default function App() {
@@ -74,8 +80,17 @@ export default function App() {
     })();
   }, [loadIdentity, refreshCounter]);
 
+  // A session handed over by the Neural Nexus application arrives after this
+  // component has already drawn the anonymous view, because the exchange is a
+  // round trip through two servers. Redrawing on it is what turns that view into
+  // the account's own without the customer touching anything.
+  useEffect(() => subscribeToSingleSignOn(refreshDashboard), [refreshDashboard]);
+
   useEffect(() => {
-    const checkoutResult = new URLSearchParams(window.location.search).get("checkout");
+    // Read before the query is stripped below: the address carries both what
+    // Checkout did and where the customer came from.
+    const searchAtLanding = window.location.search;
+    const checkoutResult = new URLSearchParams(searchAtLanding).get("checkout");
     if (!checkoutResult) {
       return;
     }
@@ -88,9 +103,19 @@ export default function App() {
     // retyped a card they already had, Stripe just created a second copy of it.
     // Reconciling here makes the card reusable and collapses the duplicate, so
     // the wallet the customer returns to is the one they expect.
+    // Reconcile first, then leave. The reconcile is why Checkout returns the
+    // customer here rather than straight to the application, so the return trip
+    // waits for it — and happens whether or not it succeeded, because a card
+    // that could not be tidied is no reason to strand somebody on this page.
+    const applicationToReturnTo = readAppReturnUrl(searchAtLanding);
     void apiRequest<unknown>("/payment_methods/reconcile", { method: "POST" })
       .catch(() => undefined)
-      .finally(() => refreshDashboard());
+      .finally(() => {
+        refreshDashboard();
+        if (applicationToReturnTo) {
+          navigateToApplication(applicationToReturnTo);
+        }
+      });
   }, [refreshDashboard]);
 
   const handleSignOut = async () => {
@@ -145,6 +170,15 @@ export default function App() {
   }
 
   const isVerified = identity?.kind === "verified";
+  // The page this customer came from when the application sent them here, and
+  // the application's front door otherwise.
+  // Where "back" goes: the avatar gallery, from wherever the portal is standing.
+  // Someone pressing it has finished with billing and wants the application, and
+  // returning them to the billing page they came from — embedded or not — is
+  // either a reload of the screen they are looking at or a round trip to the one
+  // page they were trying to leave. Resuming the exact page is the job of the
+  // post-Checkout return above, which is a different journey.
+  const returnToApplicationUrl = resolveApplicationAvatarsUrl();
 
   return (
     <div className="portal-shell">
@@ -153,6 +187,23 @@ export default function App() {
         <div>
           <h1>Neural Nexus</h1>
           <p className="subtitle">Customer portal</p>
+          {/* The way back to Neural Nexus, present in both places a customer
+              can be standing when they need it: here on the portal after
+              Checkout returned the tab (the redirect chain ate the history, so
+              there is nothing to go Back to), and inside the frame on the
+              application's billing page.
+
+              `target="_top"` is what makes the embedded case safe. Without it
+              the frame loads the application into itself, and the billing page
+              appears inside the billing page — portal and all. */}
+          <a
+            className="portal-return-link"
+            href={returnToApplicationUrl}
+            target="_top"
+            rel="noopener"
+          >
+            ← Back to Neural Nexus
+          </a>
         </div>
         <div className="header-identity">
           <ThemeToggle

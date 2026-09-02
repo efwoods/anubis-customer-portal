@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 
 import stripe
 
@@ -139,6 +140,7 @@ async def create_checkout_session(
     catalog: dict,
     client_base_url: str,
     include_trial: bool,
+    app_return_url: str | None = None,
 ) -> dict:
     """Create a subscription-mode Checkout session for one tier.
 
@@ -162,12 +164,25 @@ async def create_checkout_session(
 
     await reconcile_payment_methods(customer_id)
 
+    # Stripe returns the customer to the portal, not straight to the app that
+    # sent them: the landing there reconciles the card Checkout just charged
+    # with (see the client's checkout effect), and skipping that step leaves a
+    # card Checkout will not offer again next time. The app's URL rides along so
+    # the portal can hand the customer back afterwards — without it, a customer
+    # who started in the application ends the flow stranded on the portal with
+    # no way back, which is exactly what happened before this parameter existed.
+    return_query = (
+        f"&return_to={urllib.parse.quote(app_return_url, safe='')}"
+        if app_return_url
+        else ""
+    )
+
     checkout_parameters: dict = {
         "mode": "subscription",
         "customer": customer_id,
         "line_items": line_items,
-        "success_url": f"{client_base_url}?checkout=success",
-        "cancel_url": f"{client_base_url}?checkout=canceled",
+        "success_url": f"{client_base_url}?checkout=success{return_query}",
+        "cancel_url": f"{client_base_url}?checkout=canceled{return_query}",
         "subscription_data": {
             "metadata": {SUBSCRIPTION_TIER_METADATA_KEY: tier},
         },

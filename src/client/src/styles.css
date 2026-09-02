@@ -87,6 +87,22 @@ body {
   color: var(--color-muted);
 }
 
+/* The way back to the application. Sized like the subtitle it sits under, not
+   like a button: it is an exit, and it must not compete with the plan controls
+   this page exists for. */
+.portal-return-link {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--color-muted);
+  text-decoration: none;
+}
+
+.portal-return-link:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+
 .header-identity {
   display: flex;
   align-items: center;

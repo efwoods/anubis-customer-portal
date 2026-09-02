@@ -41,7 +41,9 @@ class PortalSettings(BaseSettings):
     # No `port` field: the Dockerfile runs `uvicorn --port 8080` and each compose
     # file publishes its host port literally, so a settings value would be read
     # by nothing while looking authoritative.
-    client_origin: str = "http://localhost:5173"  # comma-separated allowlist
+    # 5173 is the Neural Nexus application; this portal's client is 5171
+    # (vite.config.ts, the client Dockerfile, and both compose files agree).
+    client_origin: str = "http://localhost:5171"  # comma-separated allowlist
 
     # Session ---------------------------------------------------------------
     session_signing_secret: str = "change-me"
@@ -67,8 +69,26 @@ class PortalSettings(BaseSettings):
     # read alone — correct, just not immediate.
     usage_event_shared_secret: str = ""
 
+    # Neural Nexus application (the app that embeds this portal) -------------
+    # Comma-separated origins the checkout flow may hand the customer back to
+    # once Stripe is done. Deliberately NOT client_origin: that list is the CORS
+    # allowlist for this portal's own client, and an origin belongs on this one
+    # because it is a place to return a person to, not because it may call this
+    # API. Anything not listed here is refused, so a hand-crafted
+    # `?return_to=` cannot turn a Stripe receipt page into a redirect to an
+    # attacker's site.
+    app_return_origin: str = "https://neuralnexus.site"
+
     # Neural Nexus API (email + password auth: login / logout / signup) ------
     nn_api_base_url: str = "https://api.neuralnexus.site"
+    # Shared secret for single sign-on out of the Neural Nexus application into
+    # this portal. It authenticates this server's call to the Neural Nexus API's
+    # /redeem_billing_portal_exchange_code and is the same secret that API signs
+    # exchange codes with, so it must equal that API's
+    # BILLING_PORTAL_EXCHANGE_SECRET exactly. Empty turns single sign-on off:
+    # /auth/single_sign_on refuses, and a customer arriving in the embedded
+    # frame sees this portal's ordinary sign-in card.
+    nn_exchange_shared_secret: str = ""
     # Must match the Neural Nexus API's USAGE_PERIOD_DAYS. The portal reproduces
     # that API's usage-window arithmetic so the meters shown here cover exactly
     # the window its allotment gating counts against; a mismatch makes the
@@ -83,6 +103,14 @@ class PortalSettings(BaseSettings):
     @property
     def client_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.client_origin.split(",") if origin.strip()]
+
+    @property
+    def app_return_origin_list(self) -> list[str]:
+        return [
+            origin.strip().rstrip("/")
+            for origin in self.app_return_origin.split(",")
+            if origin.strip()
+        ]
 
 
 @lru_cache(maxsize=1)
