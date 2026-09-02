@@ -240,10 +240,14 @@ HTTP 400 "already redeemed". `POST /redeem_billing_portal_exchange_code` on
 :9600 now answers 401 "Redemption requests must be signed" rather than 503, and
 a CORS preflight from `http://localhost:5171` to the new route returns 200.
 
-**Live is still off** and needs three things, none of them code: a *different*
-shared secret in `anubis/.env` + `src/server/.env` (different so a test code
-cannot be spent against live), an API restart, and the D7 rebuild below — the
-`portal-live` image has no `/auth/single_sign_on` route either.
+**Live secret configured 2026-09-02, awaiting a rebuild and a restart.** A
+second 64-character secret — deliberately different from the test pair, so a
+code minted against Stripe test cannot be spent against live — is now in
+`anubis/.env` (`BILLING_PORTAL_EXCHANGE_SECRET`) and the portal's `.env`
+(`NN_EXCHANGE_SHARED_SECRET`). Neither side has picked it up yet: the API reads
+it at lifespan startup, and the `portal-live` image has no
+`/auth/single_sign_on` route at all until the D7 rebuild. See "Restarts still
+owed" below.
 
 ### D3' — Real-time usage push is not enabled in either environment
 
@@ -254,9 +258,18 @@ files, `/internal/usage-event` + `/usage/stream` implemented), so meters
 currently move only as fast as Stripe aggregates. This is the remaining half of
 `__BUG.md`'s "anonymous usage is not reported in the customer portal".
 
-Fix (in the `anubis` repo): set `PORTAL_USAGE_EVENT_URL=http://host.docker.internal:8200/internal/usage-event`
-and `PORTAL_USAGE_EVENT_SECRET` equal to the portal's `USAGE_EVENT_SHARED_SECRET`
-(they are already the same value in both portal env files), then restart.
+**Configured 2026-09-02, awaiting a restart to take effect.**
+`PORTAL_USAGE_EVENT_URL` and `PORTAL_USAGE_EVENT_SECRET` are now set in both
+`anubis/.env` (→ host port 8200, the live portal) and `anubis/.env.dev` (→ host
+port 8202, the test portal), each with the secret matching that portal's
+`USAGE_EVENT_SHARED_SECRET`. Both API containers read these into
+`GlobalContext` at lifespan startup, so neither is active until the container
+is recreated — see "Restarts still owed" below.
+
+Note for later: the portal's `USAGE_EVENT_SHARED_SECRET` is the *same value* in
+`.env` and `.env.dev`, so a test-signed usage event would be accepted by the
+live portal. Pre-existing, low severity, and not changed here because it needs
+both sides moved together — worth splitting when the live pair is next rotated.
 
 ### D4 — Two tests fail; the failures make real network calls
 
@@ -270,11 +283,11 @@ patches that name on `routers.subscription`, `routers.usage`, and `main` — but
 not `routers.invoices`. So `refund_invoice`'s `catalog = await
 get_tier_catalog()` reaches the real Stripe API during an offline test run.
 
-Fix: the three existing patches are in the `client` fixture in
-**`tests/test_portal_flow.py:96-99`** — not `tests/conftest.py`, which only
-sets environment variables at module scope and has no `monkeypatch` fixture.
-Add `monkeypatch.setattr(routers.invoices, "get_tier_catalog",
-fake_get_tier_catalog)` (and the `routers.invoices` import) alongside them.
+**FIXED 2026-09-02** (commit `a932a7f`). The three existing patches are in the
+`client` fixture in `tests/test_portal_flow.py`, not `tests/conftest.py` (which
+only sets environment variables at module scope and has no `monkeypatch`
+fixture); `monkeypatch.setattr(routers.invoices, "get_tier_catalog",
+fake_get_tier_catalog)` was added alongside them. `pytest -q` → **20 passed**.
 
 ### D5 — Usage window disagrees with the API in live (correctness, not an outage)
 
@@ -285,19 +298,64 @@ meter while the chat app returns 402. Live `/usage` currently reports
 `2026-09-01 → 2026-10-01`, i.e. calendar month. (The portal's `.env.dev` and
 `anubis/.env.dev` both use 0, so the *test* pair already agrees.)
 
-Fix: decide which window is canonical and set both sides to it. The portal's
-`.env` comment ("# Calendar Month Usage") suggests the intent was to move
-everything to 0; if so, change `anubis/.env` to `USAGE_PERIOD_DAYS=0` and
-restart the API. Otherwise set the portal back to 30.
+**Resolved 2026-09-02 in configuration, awaiting a restart to take effect.**
+**0 (calendar month) is canonical** — confirmed by the repository owner.
+`anubis/.env` moved from 30 to 0; the portal's `.env` was already 0 and did not
+change, so nothing on the portal side needs a rebuild for this. All four files
+now read 0 (portal `.env` / `.env.dev`, `anubis/.env` / `.env.dev`). The
+production API container still has `USAGE_PERIOD_DAYS=30` in its environment
+until it is recreated — see "Restarts still owed" below.
+
+## Restarts still owed
+
+Every remaining fix is configuration that is already written to disk but not yet
+loaded by a running container. Three commands apply all of it. Note the
+`--env-file` on the dev one: both anubis compose files share a directory, so
+`docker compose` auto-loads `./.env` (the live file) as the interpolation
+source, and without the flag `PORT` falls back to 8123 and the published port
+moves off 9600.
+
+```bash
+# 1. Live portal — picks up D7 (the stale image: no /usage/stream,
+#    /usage/stream-ticket or /auth/single_sign_on) and the D8 live secret.
+cd anubis-customer-portal/src/server
+docker compose -f docker-compose.yml up --build -d
+
+# 2. Production Neural Nexus API — picks up D5 (USAGE_PERIOD_DAYS 30 -> 0),
+#    D3' (the usage-event push) and the D8 live secret. Add D1's webhook
+#    secret first if you have it, so this is one restart rather than two.
+cd anubis
+docker compose -p anubis -f docker-compose-prod.yml up -d langgraph-api-prod
+
+# 3. Development Neural Nexus API — picks up D3' for the test pair.
+cd anubis
+docker compose -p anubis-dev -f docker-compose.yml --env-file .env.dev up -d langgraph-api-dev
+```
+
+**D1 is the one item still needing a human**, because Stripe returns a webhook
+endpoint's signing secret only in the create response. Reveal it in the
+Dashboard (Developers → Webhooks → "Your account" → the
+`api.neuralnexus.site/stripe/webhook` endpoint) and put it in `anubis/.env` as
+`STRIPE_WEBHOOK_SECRET` before running command 2.
+
+Do **not** reach for `provision_stripe_webhook.py --rotate` as a shortcut here.
+Every delivery to that endpoint is currently failing with 503, and Stripe is
+still retrying each of them for about three days — that retry backlog is
+precisely what will heal the Auth0 divergence the moment a valid secret is in
+place. Rotating deletes the endpoint and its queued retries along with it,
+turning a recoverable outage into permanent drift for the accounts in that
+window. Rotate only if the secret genuinely cannot be revealed.
 
 ## Suggested order
 
-D2 and D3 are done. What remains:
+D2, D3, and D4 are done in code. D5, D3', and the D8 live secret are done in
+configuration and need only the restarts above. What genuinely remains:
 
-D1 (live is silently diverging from Auth0 today) → D5 (same live-correctness
-class, one-line env change) → D7 (rebuild the live image; stops the client's
-404 polling loop, and is a prerequisite for D8 in live) → D8 live half → D3' →
-D4 → D3 residue (the 5173 mentions).
+D1 (live is silently diverging from Auth0 today; fetch the Dashboard secret) →
+restart command 2, which lands D1, D5, D3' and the API half of D8 together →
+restart command 1 (D7 + the portal half of D8) → restart command 3 (D3' in
+test) → deploy the portal client to Vercel, so the live embed gets the single
+sign-on listener and the post-Checkout return.
 
 D1, D5, and D3' are **configuration changes in the `anubis` repo**, not code
 changes here. D7 is a rebuild of this repo's live stack. D4 and the D3 residue
