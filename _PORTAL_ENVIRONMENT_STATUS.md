@@ -24,13 +24,14 @@ closed by configuration plus a rebuild of `portal-live` and a `--force-recreate`
 of `langgraph-api-prod`, all verified against the running services (see
 "Verification" at the end).
 
-**One new defect was found while verifying D1, and it is open: D9.** Auth0
+**One new defect was found while verifying D1: D9, now tabled.** Auth0
 `app_metadata` is shared mutable state between the two Stripe environments, and
-one account's live billing identity has already been overwritten by its test
-one. Read D9 before trusting `subscription_status` for any account that exists
-in both. Also outstanding, though not a defect: deploying the portal **client**
-to Vercel, so the live embed gets the single sign-on listener and the
-post-Checkout return.
+every account in the tenant now holds a *test* Stripe customer id. It is
+deferred rather than dropped because live is effectively empty — see
+**[_AUTH0_TENANT_SPLIT.md](_AUTH0_TENANT_SPLIT.md)** for the reason and the
+triggers that should un-table it. Also outstanding, though not a defect:
+deploying the portal **client** to Vercel, so the live embed gets the single
+sign-on listener and the post-Checkout return.
 
 ## Verified status
 
@@ -404,65 +405,19 @@ two are temp-mail addresses — end-to-end tests of the live flow, not paying
 strangers. **No real customer is currently harmed, which makes this the moment
 to fix it rather than a reason to defer.**
 
-### Fix: separate Auth0 tenants per environment (chosen)
+### Fix — **TABLED 2026-09-02**
 
-Two other options were considered and rejected. **Namespacing the fields by
-Stripe mode** (`subscription_status` vs `subscription_status_test`) is cheaper
-and keeps one tenant, but it is a code change in the `anubis` repo and it leaves
-every other shared field — `api_key`, `personal_avatar_id`,
-`usage_period_anchor`, `initial_subscription_provisioned` — still shared, so it
-fixes one symptom of a structural problem. **Operational discipline** ("never
-reuse an email across environments") is what is in place now, nothing enforces
-it, and it has already failed for all five accounts.
+Separate Auth0 tenants per environment. Chosen over namespacing the fields by
+Stripe mode (an `anubis` code change that would still leave `api_key`,
+`personal_avatar_id` and `usage_period_anchor` shared) and over operational
+discipline (what is in place now, already failed for all five accounts).
 
-Separate tenants makes the whole class of bug impossible, removes D6's sign-in
-trap as a side effect, and needs no code change anywhere — only configuration,
-because both repositories already read the tenant from environment variables.
+**Deferred, not dropped.** Live is effectively empty, so no real customer is
+harmed today, and the fix needs a decision plus an Auth0 dashboard action that
+cannot be automated. The reason, the un-table triggers, and the full change set
+are in **[_AUTH0_TENANT_SPLIT.md](_AUTH0_TENANT_SPLIT.md)**.
 
-**Scope.** Five keys, two repositories, four env files. The frontend needs
-nothing: it has no Auth0 configuration at all and reaches Auth0 only through the
-API.
-
-| File | Keys |
-|---|---|
-| `anubis/.env` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_CONNECTION` |
-| `anubis/.env.dev` | same five |
-| `anubis-customer-portal/src/server/.env` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET` |
-| `anubis-customer-portal/src/server/.env.dev` | same three |
-
-`AUTH0_AUDIENCE` is the Management API of the tenant
-(`https://<domain>/api/v2/`), so it moves with the domain.
-
-**Steps.**
-1. Create the second tenant in the Auth0 dashboard. This cannot be done from the
-   Management API of an existing tenant — tenant creation is an account-level
-   dashboard action, so it is a human step, like D1's signing secret.
-2. In the new tenant: enable a database connection named
-   `Username-Password-Authentication` (the value of `AUTH0_CONNECTION`), and
-   create a Machine-to-Machine application authorised for the Management API
-   with the scopes the current one holds (`read:users`, `update:users`,
-   `create:users` at minimum — `auth0_gateway.py` reads and writes
-   `app_metadata`, and `anubis/src/security/auth.py` creates users on signup).
-3. Write the five values into the two env files for whichever environment moved.
-4. Recreate the containers that read them — `--force-recreate` for the API,
-   `up --build -d` for the portal server. A restart will not do it; see
-   "Restarts" below.
-5. Re-register the accounts that need to exist in the moved environment. There
-   are five in total and all are the owner's own test addresses, so this is
-   signup, not migration.
-
-**Open decision: which environment moves.** Both are defensible and the choice
-is not the model's to make.
-- *New tenant for test, live stays put* — the conventional shape: never repoint
-  production if you can avoid it. Cost: the existing tenant is left holding five
-  users whose `app_metadata` is all test-side rubbish, to be overwritten or
-  cleaned later.
-- *New tenant for live, test stays put* — cleaner data, because the existing
-  tenant's contents are already 100% test-consistent and would simply become
-  correct by definition. Live starts empty, which costs almost nothing given it
-  holds one trialing temp-mail account. Cost: production configuration churn.
-
-Until this lands, treat `app_metadata.subscription_status` and
+Until it lands, treat `app_metadata.subscription_status` and
 `stripe_customer_id` as describing the **test** environment for every account in
 the tenant, whatever environment is reading them.
 
