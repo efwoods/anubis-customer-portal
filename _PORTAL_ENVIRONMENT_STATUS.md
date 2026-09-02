@@ -29,9 +29,8 @@ of `langgraph-api-prod`, all verified against the running services (see
 every account in the tenant now holds a *test* Stripe customer id. It is
 deferred rather than dropped because live is effectively empty — see
 **[_AUTH0_TENANT_SPLIT.md](_AUTH0_TENANT_SPLIT.md)** for the reason and the
-triggers that should un-table it. Also outstanding, though not a defect:
-deploying the portal **client** to Vercel, so the live embed gets the single
-sign-on listener and the post-Checkout return.
+triggers that should un-table it. The portal **client** is deliberately not
+being redeployed to Vercel for now — see "What remains" below.
 
 ## Verified status
 
@@ -459,15 +458,22 @@ Revealing the secret in the Dashboard cost one click and lost nothing.
 
 ## What remains
 
-Nothing in this repository, and no defect anywhere. One deployment task:
+Nothing. No defect is open in this repository, and the one remaining deployment
+task has been deliberately declined for now.
 
-**Deploy the portal client to Vercel.** The server side of single sign-on and
-the post-Checkout return are live, but the *deployed* client bundle at
-`checkout.neuralnexus.site` predates `singleSignOn.ts` and `appReturn.ts`. Until
-it ships, a customer opening the application's live billing page still meets the
-portal's own sign-in card in the frame — the designed fallback, not a break —
-and a live Checkout still ends on the portal rather than back in the
-application. Both work today against the local client on :5171.
+**Deploying the portal client to Vercel is not being done.** The server side of
+single sign-on and the post-Checkout return are live, but the *deployed* client
+bundle at `checkout.neuralnexus.site` predates `singleSignOn.ts` and
+`appReturn.ts`. That is harmless while live has no real users: a customer
+opening the live billing page meets the portal's own sign-in card in the frame —
+the designed fallback, not a break — and a live Checkout ends on the portal
+rather than back in the application. Both features work today against the local
+client on :5171, which is where they are actually exercised.
+
+Revisit on the same triggers that un-table the Auth0 tenant split
+([_AUTH0_TENANT_SPLIT.md](_AUTH0_TENANT_SPLIT.md)): a real customer signing up
+in live, or any public launch. Both of those make the live embed something
+somebody actually sees.
 
 D1, D5, and D3' are **configuration changes in the `anubis` repo**, not code
 changes here. D7 is a rebuild of this repo's live stack. D4 and the D3 residue
