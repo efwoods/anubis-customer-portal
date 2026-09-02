@@ -375,23 +375,96 @@ live events still inside Stripe's retry window will overwrite it with the live
 values — correct for live, and clobbered again the next time that email is
 touched in test.
 
-Blast radius today is one account (3 live customer emails, 8 test, 1 overlap),
-so this is not urgent — but it is silent, and it grows with every email reused
-across environments.
+**Blast radius, corrected 2026-09-02.** The first write-up of this defect
+measured the wrong thing — email overlap between the two Stripe accounts, which
+finds one account. The right measure is which Stripe account each Auth0 record's
+`stripe_customer_id` actually resolves in, and by that measure **all five users
+in the tenant point at Stripe TEST customers. Not one resolves against the live
+key.**
 
-Fix — all of these are in the `anubis` repo, none in this one:
-1. **Separate Auth0 tenants per environment.** The correct fix; makes the class
-   of bug impossible and also removes D6's sign-in trap.
-2. **Namespace the fields by Stripe mode** — `subscription_status` for live and
-   `subscription_status_test` (or an equivalent) for test, chosen from the
-   configured key's mode. Cheaper, and keeps one tenant.
-3. **Never reuse an email across environments.** Operational discipline only,
-   with nothing enforcing it — this is what is in place now, and it has already
-   failed once.
+| Auth0 user | `stripe_customer_id` | Resolves in |
+|---|---|---|
+| `e.woods.business@icloud.com` | `cus_Ux1G8zxlKL1GFV` | TEST |
+| `habite9140@robustq.com` | `cus_VBRR9JTcirLWZ5` | TEST |
+| `tineyi5581@kolsea.com` | `cus_V81oV7GP6dRSA0` | TEST |
+| `eveng1neer.business@gmail.com` | `cus_Ux1NmqcS8AOQYi` | TEST |
+| `business@neuralnexus.site` | `cus_Ux1JytTtbjRXWB` | TEST |
 
-Until one of those lands, treat `app_metadata.subscription_status` as
-authoritative only for accounts that exist in exactly one Stripe account, and
-repair `habite9140@robustq.com` by hand if that account matters.
+So the production API cannot resolve a Stripe customer for **any** account in
+the tenant. This is not a one-account edge case; it is the steady state, and it
+is the natural consequence of the development environment being the one in
+active use — every signup has gone through the dev API, and each wrote its test
+customer id over whatever live had.
+
+What keeps it from being an emergency is that live has almost nothing in it. The
+live Stripe account holds three customers: `habite9140@robustq.com` (trialing,
+created 2026-08-31), `tewona3193@amupx.com` (no subscriptions), and
+`billing_meters_test_customer@example.com` (a provisioning artifact). The first
+two are temp-mail addresses — end-to-end tests of the live flow, not paying
+strangers. **No real customer is currently harmed, which makes this the moment
+to fix it rather than a reason to defer.**
+
+### Fix: separate Auth0 tenants per environment (chosen)
+
+Two other options were considered and rejected. **Namespacing the fields by
+Stripe mode** (`subscription_status` vs `subscription_status_test`) is cheaper
+and keeps one tenant, but it is a code change in the `anubis` repo and it leaves
+every other shared field — `api_key`, `personal_avatar_id`,
+`usage_period_anchor`, `initial_subscription_provisioned` — still shared, so it
+fixes one symptom of a structural problem. **Operational discipline** ("never
+reuse an email across environments") is what is in place now, nothing enforces
+it, and it has already failed for all five accounts.
+
+Separate tenants makes the whole class of bug impossible, removes D6's sign-in
+trap as a side effect, and needs no code change anywhere — only configuration,
+because both repositories already read the tenant from environment variables.
+
+**Scope.** Five keys, two repositories, four env files. The frontend needs
+nothing: it has no Auth0 configuration at all and reaches Auth0 only through the
+API.
+
+| File | Keys |
+|---|---|
+| `anubis/.env` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_CONNECTION` |
+| `anubis/.env.dev` | same five |
+| `anubis-customer-portal/src/server/.env` | `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET` |
+| `anubis-customer-portal/src/server/.env.dev` | same three |
+
+`AUTH0_AUDIENCE` is the Management API of the tenant
+(`https://<domain>/api/v2/`), so it moves with the domain.
+
+**Steps.**
+1. Create the second tenant in the Auth0 dashboard. This cannot be done from the
+   Management API of an existing tenant — tenant creation is an account-level
+   dashboard action, so it is a human step, like D1's signing secret.
+2. In the new tenant: enable a database connection named
+   `Username-Password-Authentication` (the value of `AUTH0_CONNECTION`), and
+   create a Machine-to-Machine application authorised for the Management API
+   with the scopes the current one holds (`read:users`, `update:users`,
+   `create:users` at minimum — `auth0_gateway.py` reads and writes
+   `app_metadata`, and `anubis/src/security/auth.py` creates users on signup).
+3. Write the five values into the two env files for whichever environment moved.
+4. Recreate the containers that read them — `--force-recreate` for the API,
+   `up --build -d` for the portal server. A restart will not do it; see
+   "Restarts" below.
+5. Re-register the accounts that need to exist in the moved environment. There
+   are five in total and all are the owner's own test addresses, so this is
+   signup, not migration.
+
+**Open decision: which environment moves.** Both are defensible and the choice
+is not the model's to make.
+- *New tenant for test, live stays put* — the conventional shape: never repoint
+  production if you can avoid it. Cost: the existing tenant is left holding five
+  users whose `app_metadata` is all test-side rubbish, to be overwritten or
+  cleaned later.
+- *New tenant for live, test stays put* — cleaner data, because the existing
+  tenant's contents are already 100% test-consistent and would simply become
+  correct by definition. Live starts empty, which costs almost nothing given it
+  holds one trialing temp-mail account. Cost: production configuration churn.
+
+Until this lands, treat `app_metadata.subscription_status` and
+`stripe_customer_id` as describing the **test** environment for every account in
+the tenant, whatever environment is reading them.
 
 ## Restarts — all applied 2026-09-02
 
