@@ -77,7 +77,7 @@ class PortalSettings(BaseSettings):
     # API. Anything not listed here is refused, so a hand-crafted
     # `?return_to=` cannot turn a Stripe receipt page into a redirect to an
     # attacker's site.
-    app_return_origin: str = "https://neuralnexus.site"
+    app_return_origin: str = "https://www.neuralnexus.site,https://neuralnexus.site"
 
     # Neural Nexus API (email + password auth: login / logout / signup) ------
     nn_api_base_url: str = "https://api.neuralnexus.site"

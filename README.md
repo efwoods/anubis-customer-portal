@@ -72,7 +72,7 @@ uv sync
 ```bash
 cd src/client
 npm install
-npm run dev                   # http://localhost:5173, reads .env.development
+npm run dev                   # http://localhost:5171, reads .env.development
 # or: docker compose up --build   # http://localhost:5171, same env file
 ```
 

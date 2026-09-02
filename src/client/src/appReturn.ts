@@ -19,7 +19,7 @@
 // bar and a link that could have been handed to the customer by anyone.
 
 const APP_RETURN_ORIGINS: string[] = (
-  import.meta.env.VITE_NEURAL_NEXUS_APP_ORIGINS || "https://neuralnexus.site"
+  import.meta.env.VITE_NEURAL_NEXUS_APP_ORIGINS || "https://www.neuralnexus.site,https://neuralnexus.site"
 )
   .split(",")
   .map((origin: string) => origin.trim().replace(/\/$/, ""))
@@ -27,7 +27,7 @@ const APP_RETURN_ORIGINS: string[] = (
 
 /** The application to offer as "back", when no specific page was named. */
 export const NEURAL_NEXUS_APP_URL: string =
-  APP_RETURN_ORIGINS[0] ?? "https://neuralnexus.site";
+  APP_RETURN_ORIGINS[0] ?? "https://www.neuralnexus.site";
 
 /**
  * Whether this URL is one of the application origins the portal returns to.

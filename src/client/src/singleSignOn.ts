@@ -44,7 +44,7 @@ const SINGLE_SIGN_ON_ACKNOWLEDGEMENT_MESSAGE_TYPE =
   "neural-nexus-portal-single-sign-on-acknowledged";
 
 const NEURAL_NEXUS_APP_ORIGINS: string[] = (
-  import.meta.env.VITE_NEURAL_NEXUS_APP_ORIGINS || "https://neuralnexus.site"
+  import.meta.env.VITE_NEURAL_NEXUS_APP_ORIGINS || "https://www.neuralnexus.site,https://neuralnexus.site"
 )
   .split(",")
   .map((origin: string) => origin.trim().replace(/\/$/, ""))
